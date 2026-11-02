@@ -44,7 +44,9 @@ D_{pp}(\theta_k)=e^{i\phi_{\max}\theta_kG_p},\qquad
 r_k=\operatorname{downsample}(|E_{\rm CCD,k}|^2).
 \]
 
-输入阈值化后扩展到整个 SLM，无拼接。\(O_1,O_2\) 是 objective Fourier pupil，\(A,B\) 为一次生成并固定的随机复振幅传播过程。局部高斯 \(G\) 的 support 占中间有效平面约 **1/10**；后续传播可使更大范围的 CCD 发生变化。\(D=1\) 于 support 之外。
+输入连续作用于整个 SLM：\(\Phi_p(u_k)=u_k(0.5+0.5M_p)\)，其中固定随机空间 mask \(M_p\in[0,1]\)，因此每个 SLM 像素都随 \(u_k\) 改变相位，而不是只切换部分阈值像素。空间 mask 的作用是避免整个 SLM 只获得相同全局相位；若 phase-only 输入在所有点严格相同，只形成公共相位，理想强度探测无法看到其变化。可选 `slm_encoding='binary_threshold'` 恢复以前的阈值编码。
+
+\(O_1,O_2\) 是 objective Fourier pupil，\(A,B\) 为一次生成并固定的随机复振幅传播过程。局部高斯 \(G\) 的 support 占中间有效平面约 **1/10**；后续传播可使更大范围的 CCD 发生变化。\(D=1\) 于 support 之外。全平面 SLM 输入和局部热源是两个独立的空间概念。
 
 若定义实际温升为 \(\Delta T_p=T_s\theta_kG_p\)，并假设热光系数和有效受热厚度在局部近似均匀，则
 \[
@@ -64,8 +66,10 @@ from optical_physical_memory import PhysicalMemoryOptics, PhysicalNoise, RidgeRe
 
 torch.set_num_threads(1)
 plt.rcParams['figure.dpi'] = 100
-noise = PhysicalNoise(pupil_rms_rad=0.06, slm_phase_std_rad=0.015,
-                      photon_scale=50000, read_noise_electrons=1.0, shot_noise=True)
+noise = PhysicalNoise(pupil_rms_rad=0.18, slm_phase_std_rad=0.06,
+                      photon_scale=5000, read_noise_electrons=3.0, shot_noise=True)
+previous_noise = PhysicalNoise(pupil_rms_rad=0.06, slm_phase_std_rad=0.015,
+                               photon_scale=50000, read_noise_electrons=1.0, shot_noise=True)
 ideal = PhysicalNoise(pupil_rms_rad=0, slm_phase_std_rad=0,
                       photon_scale=50000, read_noise_electrons=0, shot_noise=False)
 common = dict(optical_shape=(128, 128), slm_shape=(128, 128),
@@ -80,15 +84,15 @@ print('Input, SLM, optical, CCD features:', model.input_shape, model.slm_shape, 
 md(r'''
 ## 3. 检查 SLM、pupil 和 CCD
 
-物镜的有限 pupil 是确定性滤波；额外的固定 pupil 波前误差、SLM 相位抖动、CCD Poisson shot noise 和读出噪声分别可调。噪声数值只是示例，CCD 增益用 `photon_scale` 表示，未标定。每帧不做 min–max 归一化。
+物镜的有限 pupil 是确定性滤波；额外的固定 pupil 波前误差、SLM 相位抖动、CCD Poisson shot noise 和读出噪声分别可调。与前一版相比，示例中的 pupil 像差从 0.06 增至 0.18 rad、SLM 抖动从 0.015 增至 0.06 rad、`photon_scale` 从 50,000 降至 5,000（提高相对散粒噪声）、读出噪声从 1 增至 3 电子。这些都是未经标定的示例；pupil 像差是静态器件差异，其余为逐次曝光噪声。每帧不做 min–max 归一化。
 
-`|E_SLM|=1` 的白图是 phase-only SLM 的正常振幅；灰度相位图展示 \(0\) 和 \(\pi\) 及少量相位抖动。
+`|E_SLM|=1` 的白图是 phase-only SLM 的正常振幅；灰度相位图展示整个 SLM 的连续空间相位及抖动。
 ''')
 code('''
 sample_inputs = np.random.default_rng(7).random(50)
 _, _, _, snap = model.run(sample_inputs, snapshot_at=49)
 fig, axes = plt.subplots(2, 4, figsize=(14, 7), constrained_layout=True)
-panels = [(snap['input_image'], 'input mask image', 'gray', 0, 1),
+panels = [(snap['input_image'], 'continuous input phase pattern', 'gray', 0, 1),
           (snap['slm_phase'], 'full-SLM phase (rad)', 'gray', 0, np.pi),
           (np.abs(snap['slm_field']), '|exp(i phase)|', 'gray', 0, 1),
           (model.pupil1_support.cpu(), 'objective 1 pupil', 'gray', 0, 1),
@@ -102,6 +106,23 @@ for ax, (arr, title, cmap, vmin, vmax) in zip(axes.flat, panels):
 plt.show()
 print('theta used for camera:', snap['theta_read'], 'next theta:', snap['theta_next'])
 print('SLM amplitude min/max:', np.abs(snap['slm_field']).min(), np.abs(snap['slm_field']).max())
+print('Mean expected CCD electrons per optical pixel:', snap['ccd_ideal'].mean()*noise.photon_scale)
+
+# With jitter disabled, every SLM pixel has a nonzero input response.
+check = PhysicalMemoryOptics(**common, tau=8, heat_mode='driven', noise=ideal)
+_, _, _, low = check.run([0.25], snapshot_at=0)
+_, _, _, high = check.run([0.75], snapshot_at=0)
+coverage = np.mean(np.abs(high['slm_phase']-low['slm_phase']) > 1e-7)
+print('Fraction of SLM pixels modulated by input change:', coverage)
+assert coverage == 1.0
+
+# Repeat a fixed input/temperature; this quantifies temporal noise remaining
+# after 128×128 -> 16×16 pooling, not a calibrated experimental measurement.
+for name, cfg in [('previous noise', previous_noise), ('strong noise', noise)]:
+    repeat_model = PhysicalMemoryOptics(**common, tau=8, heat_mode='static', noise=cfg)
+    repeats, _, _, _ = repeat_model.run(np.full(100, 0.5))
+    relative_fluctuation = repeats.std(axis=0).mean()/repeats.mean()
+    print(f'{name}: pooled-feature temporal std / mean = {relative_fluctuation:.2%}')
 ''')
 md(r'''
 ## 4. 脉冲写入与指数消退：验证公式时序
@@ -156,6 +177,8 @@ md(r'''
 
 对照包括无热、固定热、即时热、不同 \(\tau\) 的输入驱动热状态、噪声开关和 persistence。静态光学映射也可能预测自相关时间序列，因此请结合下节的独立随机输入延迟重建解释。
 
+`previous noise` 对应前一版较小噪声，`strong noise` 对应本版较大噪声。两者的 pupil 静态像差也不同，因此整体差异不能全部归因于时间随机噪声。
+
 每个条件的 \(W_{\rm out}\) 与 ESN 的线性读出一样用 ridge 回归求解：
 \[
 W_{\rm out}=(Z^TZ+\lambda P)^{-1}Z^TY,
@@ -181,12 +204,13 @@ print('Test correlation of u[k] and u[k+1]:', np.corrcoef(u[test], y[test])[0, 1
 cases = [
     ('No heat, ideal', 'off', 8, ideal),
     ('Thermal τ=8, ideal', 'driven', 8, ideal),
-    ('No heat, noisy', 'off', 8, noise),
-    ('Static heat, noisy', 'static', 8, noise),
-    ('Instant heat, noisy', 'instant', 8, noise),
-    ('Thermal τ=2, noisy', 'driven', 2, noise),
-    ('Thermal τ=8, noisy', 'driven', 8, noise),
-    ('Thermal τ=32, noisy', 'driven', 32, noise),
+    ('Thermal τ=8, previous noise', 'driven', 8, previous_noise),
+    ('No heat, strong noise', 'off', 8, noise),
+    ('Static heat, strong noise', 'static', 8, noise),
+    ('Instant heat, strong noise', 'instant', 8, noise),
+    ('Thermal τ=2, strong noise', 'driven', 2, noise),
+    ('Thermal τ=8, strong noise', 'driven', 8, noise),
+    ('Thermal τ=32, strong noise', 'driven', 32, noise),
 ]
 predictions, readouts = {}, {}
 for label, mode, tau, noise_config in cases:
@@ -199,18 +223,18 @@ for label, mode, tau, noise_config in cases:
     predictions[label], readouts[label] = readout.predict(features[test]), readout
     print(f'{label:<25} NRMSE={nrmse(y[test], predictions[label]):.4f}  ridge={alpha:g}')
 print(f"{'Persistence':<25} NRMSE={nrmse(y[test], u[test]):.4f}")
-print('W_out shape (bias + camera features):', readouts['Thermal τ=8, noisy'].weights_.shape)
+print('W_out shape (bias + camera features):', readouts['Thermal τ=8, strong noise'].weights_.shape)
 ''')
 code('''
 fig, axes = plt.subplots(4, 1, figsize=(12, 9), sharex=True, constrained_layout=True)
-for ax, label in zip(axes, ['No heat, noisy', 'Static heat, noisy', 'Thermal τ=2, noisy', 'Thermal τ=8, noisy']):
+for ax, label in zip(axes, ['No heat, strong noise', 'Static heat, strong noise', 'Thermal τ=2, strong noise', 'Thermal τ=8, strong noise']):
     ax.plot(y[test][:200], color='black', lw=1.2, label='target')
     ax.plot(predictions[label][:200], lw=1, label=label)
     ax.set_title(f'{label}: NRMSE={nrmse(y[test], predictions[label]):.4f}', fontsize=9)
     ax.legend(fontsize=8)
 axes[-1].set_xlabel('test time step'); plt.show()
 
-weights = readouts['Thermal τ=8, noisy'].weights_[1:].reshape(common['camera_shape'])
+weights = readouts['Thermal τ=8, strong noise'].weights_[1:].reshape(common['camera_shape'])
 fig, ax = plt.subplots(figsize=(5, 4)); im=ax.imshow(weights, cmap='coolwarm')
 ax.set_title('W_out on standardized speckle features'); fig.colorbar(im, ax=ax); plt.show()
 ''')
@@ -221,7 +245,7 @@ md(r'''
 ''')
 code('''
 random_u = np.random.default_rng(2026).random(2000)
-memory_cases = [cases[2], cases[3], cases[4], cases[5], cases[6], cases[7]]
+memory_cases = cases[3:]
 delays = np.array([1, 2, 4, 8, 16]); split_memory = 1400
 memory_scores = {}
 for label, mode, tau, noise_config in memory_cases:
@@ -241,7 +265,39 @@ ax.axhline(0, color='0.5', lw=.8); ax.set(xlabel='delay d', ylabel='held-out R²
 ax.legend(fontsize=7); ax.grid(alpha=.2); plt.show()
 ''')
 md(r'''
-## 8. 结果的边界
+## 8. 非线性是否可读出？
+
+使用独立随机输入 \(x_k=2u_k-1\)，测试二阶 \(P_2(x)=(3x^2-1)/2\) 与当前/过去乘积。分别比较无热、不同 \(\tau\) 的热记忆，以及固定 probe、仅加热序列变化的条件。固定 probe 帮助区分 SLM 当前输入编码和“热相位→干涉→CCD”的非线性。每个任务只用验证段选择 ridge，报告未参与拟合的测试 \(R^2\)。
+''')
+code('''
+nl_u = np.random.default_rng(213).random(3000)
+x = 2*nl_u-1
+targets = {'current P2': .5*(3*x*x-1),
+           'delay-1 P2': .5*(3*np.roll(x, 1)**2-1),
+           'current × delay-1': x*np.roll(x, 1)}
+nl_train = np.arange(100, 1700); nl_valid = np.arange(1700, 2200); nl_test = np.arange(2200, len(nl_u))
+nl_cases = [('No heat', 'off', 2, False), ('Thermal τ=2', 'driven', 2, False),
+            ('Thermal τ=8', 'driven', 8, False), ('τ=2 fixed probe', 'driven', 2, True)]
+def score_r2(target, prediction, indices):
+    y0 = target[indices]
+    return 1-np.sum((y0-prediction)**2)/np.sum((y0-y0.mean())**2)
+print(f"{'Condition':<22}" + ''.join(f'{name:>21}' for name in targets))
+for label, mode, tau, fixed_probe in nl_cases:
+    m = PhysicalMemoryOptics(**common, tau=tau, heat_mode=mode, noise=noise)
+    probe = np.full(len(nl_u), 0.5) if fixed_probe else nl_u
+    features, _, _, _ = m.run(probe, heat_inputs=nl_u)
+    result = []
+    for target in targets.values():
+        candidates = [1.0, 10.0, 100.0, 1000.0]
+        validation = [score_r2(target, RidgeReadout(a).fit(features[nl_train], target[nl_train]).predict(features[nl_valid]), nl_valid) for a in candidates]
+        best = candidates[int(np.argmax(validation))]
+        fit = np.r_[nl_train, nl_valid]
+        prediction = RidgeReadout(best).fit(features[fit], target[fit]).predict(features[nl_test])
+        result.append(score_r2(target, prediction, nl_test))
+    print(f'{label:<22}' + ''.join(f'{v:>21.3f}' for v in result))
+''')
+md(r'''
+## 9. 结果的边界
 
 1. 这个版本的递推变量只有 \(\theta\)；没有 previous speckle、电子 leak 或输出到 SLM 的反馈。
 2. 固定随机传播中插入局部相位屏，是 \(\Delta T\rightarrow\Delta n\rightarrow\Delta\phi\rightarrow T\) 的简化有效模型；\(\phi_{\max}\) 和输入热耦合尚未按材料、波长和厚度标定。
