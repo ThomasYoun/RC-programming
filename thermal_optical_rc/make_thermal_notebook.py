@@ -1,5 +1,6 @@
 """Build the tutorial notebook from the cell sources below."""
 import json
+import sys
 from pathlib import Path
 import textwrap
 
@@ -12,7 +13,7 @@ def code(text):
 md(r'''
 # 局部热源自由衰减与无反馈光学预测
 
-研究顺序：固定随机传播 → 单次加热后的自由冷却 → 不同条件下的 speckle → Mackey–Glass 预测 → 检验输入历史是否真正被储存。
+研究顺序：构建 SLM–objective–散射介质–热相位屏–objective–CCD 光路 → 比较不同热条件下的 speckle → Mackey–Glass 预测 → 检验输入历史是否真正被储存。
 
 **重要模型约定：** 加热在 $k=0$ 前发生，初始热状态 $\theta_0=1$。之后输入光只用于探测/编码，不给热源写入信息；没有电子反馈。本 notebook 因此是物理特性和预测 **baseline**，不是输入 fading-memory RC 的证明。
 
@@ -24,7 +25,13 @@ md(r'''
 $$\theta_k=\theta_0e^{-k\Delta t/\tau},\quad
 G_p=\mathbf1_{p\in S}\exp[-r_p^2/(2\sigma^2)],\quad |S|/N=1/4.$$
 
-$$T_k=B D_k A,\quad D_{pp,k}=e^{i\phi_{\max}\theta_kG_p},\quad I_k=|T_kE(u_k)|^2.$$
+$$E_\mathrm{SLM}=e^{i\pi[\Phi_\mathrm{ref};\Phi(u_k)]},\quad
+E_\mathrm{CCD}=O_2D_k H O_1E_\mathrm{SLM},\quad
+D_{pp,k}=e^{i\phi_{\max}\theta_kG_p},\quad r_k=\operatorname{downsample}(|E_\mathrm{CCD}|^2).$$
+
+这里 $O_1,O_2$ 分别为两个 objective 的 Fourier pupil，$H$ 是固定的隐式随机散射算子。将 $A=HO_1$、$B=O_2$ 包括在内，仍为 $T_k=BD_kA$。热屏是在固定散射后、第二片 objective 前的**有效平面**，并非样品内部完整微观模型。
+
+SLM 下半区编码当前输入图案，上半区设为固定零相位参考；CCD 得到的 $r_k$ 是当前观测状态，**不反馈**到 SLM。相位为零的位置仍然透光（复振幅为 1）。SLM 场中心 pad/crop 到光学平面时，超出 SLM 的部分才补零。
 
 每个条件使用**同一个** $A,B$、输入 mask、初始热状态和相位系数。$\tau$ 与 $\Delta t$ 使用相同时间单位。`phase_max` 表示单位温升下的最大相位，当前是示例参数而非材料标定。25% 是**内部加热平面**的空间像素比例，并不表示 transmission matrix 的 25% 元素。
 
@@ -34,7 +41,7 @@ $$T_k=B D_k A,\quad D_{pp,k}=e^{i\phi_{\max}\theta_kG_p},\quad I_k=|T_kE(u_k)|^2
 | 静态热扰动 | 有限 | $\theta=1$ |
 | 快/中/慢冷却 | 有限 | 同一初值，不同 $\tau$ |
 
-随机矩阵 $A,B$ 用固定随机相位屏和 FFT 隐式实现，因此是可控的简化传播模型，而非对真实散射样品的精确重建。
+固定散射部分参考原 notebook：随机复振幅屏 → 正交 FFT → 随机复振幅屏 → 正交 IFFT。两个 objective 均为 FFT → 圆形 pupil → IFFT；散射屏和输入 mask 在所有条件下保持固定。
 ''')
 code('''
 import numpy as np
@@ -47,7 +54,9 @@ torch.set_num_threads(1)  # avoids excessive CPU threading for small FFTs
 plt.rcParams['figure.dpi'] = 110
 DT = 1.0
 PHASE_MAX = 8.0
-optics = FixedDisorderedOptics(shape=(32, 32), camera_shape=(12, 12), seed=42)
+optics = FixedDisorderedOptics(shape=(128, 128), input_shape=(64, 64),
+    slm_shape=(128, 128), camera_shape=(16, 16),
+    objective1_radius=0.25, objective2_radius=0.25, seed=42)
 conditions = [
     Condition('No heater', 0.0, None),
     Condition('Static heater', PHASE_MAX, None),
@@ -56,9 +65,40 @@ conditions = [
     Condition('Slow decay τ=8000', PHASE_MAX, 8000),
 ]
 print('Heater support fraction:', float(optics.support.float().mean()))
+print('SLM / optical / camera state shapes:', optics.slm_shape, optics.shape, optics.camera_shape)
 ''')
 md(r'''
-## 2. 加热形状与时间过程
+## 2. 光路各平面
+
+下图展示单个输入在各平面的状态。为了在一般电脑上运行，CCD 图像从 128×128 平均下采样为 16×16。可以在上一单元中调整 `shape`、`slm_shape`、`input_shape` 和 `camera_shape`；较大的 camera state 会增加线性回归的内存和计算量。
+''')
+code('''
+snap = optics.snapshot(input_value=0.5, theta=1.0, phase_max=PHASE_MAX)
+fig, axes = plt.subplots(2, 4, figsize=(14, 7), constrained_layout=True)
+panels = [(snap['input_image'], 'input image', 'gray'),
+          (snap['slm_phase'], 'SLM phase: fixed reference / input', 'twilight'),
+          (optics.pupil1.cpu(), 'objective 1 pupil', 'gray'),
+          (np.abs(snap['objective1_field'])**2, 'after objective 1', 'magma'),
+          (np.abs(snap['scattered_field'])**2, 'after fixed scattering', 'magma'),
+          (snap['thermal_phase'], 'heater phase', 'inferno'),
+          (snap['ccd_intensity'], 'CCD intensity after objective 2', 'magma'),
+          (snap['reservoir_state'], 'downsampled reservoir state', 'magma')]
+for ax, (value, title, cmap) in zip(axes.flat, panels):
+    im = ax.imshow(value, cmap=cmap); ax.set_title(title, fontsize=9); ax.axis('off')
+    fig.colorbar(im, ax=ax, fraction=.046, pad=.04)
+plt.show()
+
+# Zero temperature and zero phase strength must produce the same optical field.
+no_heat_a = optics.snapshot(.5, 1.0, 0.0)
+no_heat_b = optics.snapshot(.5, 0.0, PHASE_MAX)
+assert np.allclose(no_heat_a['ccd_intensity'], no_heat_b['ccd_intensity'])
+# A pure-phase heater conserves power at its own plane, before objective 2.
+assert np.isclose(np.sum(np.abs(snap['scattered_field'])**2),
+                  np.sum(np.abs(snap['heated_field'])**2), rtol=1e-5)
+print('Optical checks: zero heating agrees; phase screen preserves power.')
+''')
+md(r'''
+## 3. 加热形状与时间过程
 
 绘制归一化空间分布和 $\theta_k$。高斯在有限 support 外截断；空间上的 1/4 指 support 而不是高斯能量的 1/4。静态热源对应一个固定的扰动状态。
 ''')
@@ -73,7 +113,7 @@ ax[1].set(xlabel='time step k', ylabel='normalized temperature θ', title='Free 
 ax[1].legend(fontsize=8); fig.tight_layout(); plt.show()
 ''')
 md(r'''
-## 3. 固定 probe：逐组观察 speckle
+## 4. 固定 probe：逐组观察 speckle
 
 固定 $u_k=0.5$，在各时刻使用同一个入射光场；因此图像变化来自热相位屏。所有图共用色标，数值是 $|E|^2$，不对每一帧分别做 min–max 归一化。右侧图显示与**无热 speckle**的空间 Pearson 相关系数；它描述 speckle 变化，不直接代表信息记忆容量。
 ''')
@@ -100,7 +140,7 @@ ax.set(xlabel='time step k', ylabel='spatial correlation with no heater', ylim=(
 ax.legend(fontsize=8); ax.grid(alpha=.25); plt.show()
 ''')
 md(r'''
-## 4. 相同当前输入、不同历史
+## 5. 相同当前输入、不同历史
 
 随机产生两条不同历史，在相同时刻给它们同一个当前输入。自由冷却的 $\theta_k$ 不依赖之前的输入，因此相同当前输入必然得到相同的输出。这是本模型没有输入历史记忆的直接检验。
 ''')
@@ -117,7 +157,7 @@ print('Max |speckle A - speckle B| at same time/current input:', np.max(np.abs(f
 assert np.allclose(frame_a, frame_b, atol=1e-7)
 ''')
 md(r'''
-## 5. Mackey–Glass：逐组 one-step prediction
+## 6. Mackey–Glass：逐组 one-step prediction
 
 本地 `MackeyGlass_t17.txt` 是用户已有序列。时间顺序划分：前 2000 点训练，后 2000 点测试；训练期间的缩放用于测试。训练目标为 $y_k=u_{k+1}$，测试时每步输入真实 $u_k$（teacher forcing），没有预测输出或 CCD 电子反馈。自由冷却从训练开始持续到测试结束，**不在 train/test 之间重新加热**。
 
@@ -160,7 +200,7 @@ for ax, name in zip(axes, ['Persistence'] + [c.name for c in conditions]):
 axes[-1].set_xlabel('test time step'); plt.show()
 ''')
 md(r'''
-## 6. 如何解释结果
+## 7. 如何解释结果
 
 1. 这些曲线显示，在相同随机介质下，自由冷却如何改变透射映射及 speckle。静态扰动给出固定瞬时映射；不同 $\tau$ 给出不同时间变化。
 2. 因为没有输入写入热状态，输入历史检验中两条不同历史的输出相同。单次冷却可以保留**加热事件本身**的衰减痕迹，却不能储存之后的输入序列。
@@ -171,4 +211,5 @@ md(r'''
 ''')
 
 notebook = {'cells': cells, 'metadata': {'kernelspec': {'display_name': 'Python 3', 'language': 'python', 'name': 'python3'}, 'language_info': {'name': 'python', 'version': '3'}}, 'nbformat': 4, 'nbformat_minor': 4}
-Path('thermal_free_decay_comparison.ipynb').write_text(json.dumps(notebook, ensure_ascii=False, indent=1)+'\n', encoding='utf-8')
+output_path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path('thermal_free_decay_comparison.ipynb')
+output_path.write_text(json.dumps(notebook, ensure_ascii=False, indent=1)+'\n', encoding='utf-8')
