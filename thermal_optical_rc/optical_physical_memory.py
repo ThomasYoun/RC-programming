@@ -13,10 +13,10 @@ import torch.nn.functional as F
 
 @dataclass(frozen=True)
 class PhysicalNoise:
-    pupil_rms_rad: float = 0.06      # fixed pupil wavefront error, RMS radians
-    slm_phase_std_rad: float = 0.015 # per-sample phase jitter, radians
-    photon_scale: float = 50000.0    # expected photoelectrons / unit intensity
-    read_noise_electrons: float = 1.0
+    pupil_rms_rad: float = 0.18      # fixed pupil wavefront error, RMS radians
+    slm_phase_std_rad: float = 0.06  # per-sample phase jitter, radians
+    photon_scale: float = 5000.0     # expected photoelectrons / unit intensity
+    read_noise_electrons: float = 3.0
     shot_noise: bool = True
 
 
@@ -28,6 +28,7 @@ class PhysicalMemoryOptics:
                  heater_phase_max=6.0, tau=8.0, dt=1.0, beta=None,
                  thermal_gain=1.0, heat_mode='driven', static_theta=0.5,
                  scatter_scale=0.8, optical_gain=0.8,
+                 slm_encoding='continuous_global',
                  noise=PhysicalNoise(), seed=42, noise_seed=123, device='cpu'):
         self.optical_shape = tuple(optical_shape)
         self.slm_shape = tuple(slm_shape)
@@ -43,6 +44,8 @@ class PhysicalMemoryOptics:
             raise ValueError('pupil radii must be in (0,1]')
         if heat_mode not in ('driven', 'off', 'static', 'instant'):
             raise ValueError('heat_mode must be driven, off, static or instant')
+        if slm_encoding not in ('continuous_global', 'binary_threshold'):
+            raise ValueError('slm_encoding must be continuous_global or binary_threshold')
         if min(noise.pupil_rms_rad, noise.slm_phase_std_rad, noise.read_noise_electrons) < 0 or noise.photon_scale <= 0:
             raise ValueError('noise amplitudes must be non-negative; photon_scale must be positive')
         self.tau, self.dt = float(tau), float(dt)
@@ -55,6 +58,7 @@ class PhysicalMemoryOptics:
         self.heat_mode, self.static_theta = heat_mode, float(static_theta)
         self.heater_phase_max, self.optical_gain = float(heater_phase_max), float(optical_gain)
         self.noise, self.noise_seed = noise, noise_seed
+        self.slm_encoding = slm_encoding
 
         fixed = torch.Generator(device=self.device).manual_seed(seed)
         self.input_mask = torch.rand(self.input_shape, generator=fixed, device=self.device)
@@ -109,13 +113,19 @@ class PhysicalMemoryOptics:
         self.noise_generator = torch.Generator(device=self.device).manual_seed(self.noise_seed)
 
     def _encode_input(self, u):
-        binary = (self.input_mask <= u).float()
-        # The full SLM is an upscaled current input image; no state is concatenated.
-        slm_pattern = F.interpolate(binary[None, None], size=self.slm_shape, mode='nearest')[0, 0]
+        if self.slm_encoding == 'continuous_global':
+            # Every SLM pixel responds continuously to u; fixed spatial gain
+            # varies in [0.5, 1] to avoid an invisible global phase shift.
+            input_image = u*(0.5+0.5*self.input_mask)
+        else:
+            # Original notebook encoding; a small input change flips only the
+            # pixels whose random thresholds are crossed.
+            input_image = (self.input_mask <= u).float()
+        slm_pattern = F.interpolate(input_image[None, None], size=self.slm_shape, mode='nearest')[0, 0]
         phase = torch.pi*slm_pattern
         if self.noise.slm_phase_std_rad:
             phase += self.noise.slm_phase_std_rad*torch.randn(phase.shape, generator=self.noise_generator, device=self.device)
-        return binary, phase, torch.exp(1j*phase)
+        return input_image, phase, torch.exp(1j*phase)
 
     def optical_field(self, slm_field, theta):
         """O2 B D(theta) A O1 acting on a complex SLM field."""
@@ -141,7 +151,7 @@ class PhysicalMemoryOptics:
             theta_read = heat_input
         else:
             theta_read = self.theta
-        binary, slm_phase, slm_field = self._encode_input(u)
+        input_image, slm_phase, slm_field = self._encode_input(u)
         ideal = self.optical_field(slm_field, theta_read).abs().square()
         expected = ideal*self.noise.photon_scale
         electrons = torch.poisson(expected, generator=self.noise_generator) if self.noise.shot_noise else expected
@@ -154,7 +164,7 @@ class PhysicalMemoryOptics:
         if not record:
             return features, theta_read, theta_next
         return features, theta_read, theta_next, {
-            'input_image': binary.cpu().numpy(), 'slm_phase': slm_phase.cpu().numpy(),
+            'input_image': input_image.cpu().numpy(), 'slm_phase': slm_phase.cpu().numpy(),
             'slm_field': slm_field.cpu().numpy(), 'ccd_ideal': ideal.cpu().numpy(),
             'ccd_measured': measured.cpu().numpy(), 'features': features,
             'theta_read': theta_read, 'theta_next': theta_next,
