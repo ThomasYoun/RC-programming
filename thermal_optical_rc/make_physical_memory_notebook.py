@@ -46,7 +46,7 @@ r_k=\operatorname{downsample}(|E_{\rm CCD,k}|^2).
 
 输入连续作用于整个 SLM：\(\Phi_p(u_k)=u_k(0.5+0.5M_p)\)，其中固定随机空间 mask \(M_p\in[0,1]\)，因此每个 SLM 像素都随 \(u_k\) 改变相位，而不是只切换部分阈值像素。空间 mask 的作用是避免整个 SLM 只获得相同全局相位；若 phase-only 输入在所有点严格相同，只形成公共相位，理想强度探测无法看到其变化。可选 `slm_encoding='binary_threshold'` 恢复以前的阈值编码。
 
-\(O_1,O_2\) 是 objective Fourier pupil，\(A,B\) 为一次生成并固定的随机复振幅传播过程。局部高斯 \(G\) 的 support 占中间有效平面约 **1/10**；后续传播可使更大范围的 CCD 发生变化。\(D=1\) 于 support 之外。全平面 SLM 输入和局部热源是两个独立的空间概念。
+\(O_1,O_2\) 是 objective Fourier pupil，\(A,B\) 为一次生成并固定的随机复振幅传播过程。高斯热源的 support 占中间有效平面约 **80%**；加热增益由 1.0 提高到 **1.3**，即相同加热输入下的稳态热状态提高 30%。\(D=1\) 于 support 之外。全平面 SLM 输入和热源的空间区域是两个独立的概念。增大 support 时高斯宽度也按面积扩大；support 不是均匀温度区域。
 
 若定义实际温升为 \(\Delta T_p=T_s\theta_kG_p\)，并假设热光系数和有效受热厚度在局部近似均匀，则
 \[
@@ -74,11 +74,11 @@ ideal = PhysicalNoise(pupil_rms_rad=0, slm_phase_std_rad=0,
                       photon_scale=50000, read_noise_electrons=0, shot_noise=False)
 common = dict(optical_shape=(128, 128), slm_shape=(128, 128),
     input_shape=(32, 32), camera_shape=(16, 16), pupil_radius=(0.25, 0.25),
-    heater_fraction=0.1, heater_phase_max=6.0, dt=1.0,
-    thermal_gain=1.0, seed=42, noise_seed=123)
+    heater_fraction=0.8, heater_phase_max=6.0, dt=1.0,
+    thermal_gain=1.3, seed=42, noise_seed=123)
 model = PhysicalMemoryOptics(**common, tau=8, beta=None, heat_mode='driven', noise=noise)
 print(f'Heater support = {float(model.heater_support.float().mean()):.6f}')
-print(f'a = {model.a:.6f}; beta = {model.beta:.6f}')
+print(f'a = {model.a:.6f}; beta = {model.beta:.6f}; thermal gain = {model.thermal_gain:.2f}')
 print('Input, SLM, optical, CCD features:', model.input_shape, model.slm_shape, model.optical_shape, model.camera_shape)
 ''')
 md(r'''
@@ -96,7 +96,7 @@ panels = [(snap['input_image'], 'continuous input phase pattern', 'gray', 0, 1),
           (snap['slm_phase'], 'full-SLM phase (rad)', 'gray', 0, np.pi),
           (np.abs(snap['slm_field']), '|exp(i phase)|', 'gray', 0, 1),
           (model.pupil1_support.cpu(), 'objective 1 pupil', 'gray', 0, 1),
-          (model.heater_profile.cpu(), 'heater support ~10%', 'inferno', 0, 1),
+          (model.heater_profile.cpu(), 'heater support ~80%', 'inferno', 0, 1),
           (snap['ccd_ideal'], 'ideal CCD', 'magma', None, None),
           (snap['ccd_measured'], 'noisy CCD', 'magma', None, None),
           (snap['features'], 'CCD feature r[k]', 'magma', None, None)]
