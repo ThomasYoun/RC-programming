@@ -11,42 +11,42 @@ def code(text):
     cells.append({'cell_type': 'code', 'metadata': {}, 'execution_count': None, 'outputs': [], 'source': textwrap.dedent(text).strip().splitlines(keepends=True)})
 
 md(r'''
-# 光学反馈 + 热致动态传输矩阵：带物理噪声的 RC
+# Optical feedback and a thermally varying transmission matrix: RC with physical noise
 
-此版本按原 `RC_opMGSLM.ipynb` 的光路，将 **上一时刻 CCD state 和当前 input image 上下拼接到 SLM**。因此它同时包含电子反馈和热记忆。所有随机散射屏只初始化一次；(W_{\rm in}) 和 (W_{\rm res}) 的变化由同一个热相位屏产生。
+Following the optical path in `RC_opMGSLM.ipynb`, this version places **the previous CCD state and the current input image in the upper and lower halves of the SLM**. It therefore includes both electronic feedback and thermal memory. All random scattering screens are initialized once; the same thermal phase screen changes both \(W_{\rm in}\) and \(W_{\rm res}\).
 
-需要同一目录下的 `optical_feedback_thermal.py` 与 `MackeyGlass_t17.txt`，依赖 NumPy、PyTorch、Matplotlib、Jupyter。温升、相位、噪声与时间参数均为可调示例，未对真实装置标定。
+Place `optical_feedback_thermal.py` and `MackeyGlass_t17.txt` alongside this notebook. NumPy, PyTorch, Matplotlib and Jupyter are required. Temperature, phase, noise and time parameters are adjustable examples and have not been calibrated to a real device.
 ''')
 md(r'''
-## 1. 光路和状态更新
+## 1. Optical path and state update
 
 \[
 u_k\;\xrightarrow{\text{fixed mask}}\;\Phi_k,\qquad
 E_{\mathrm{SLM},k}=\exp\left(i\pi\begin{bmatrix}r_k\\\Phi_k\end{bmatrix}\right).
 \]
 
-两幅图分别扩展后居中放入 SLM 的上、下半区；相位为零的 SLM 区域仍透光。复光场中心 pad/crop 至光学平面，再经过
+The two images are separately enlarged and centered in the upper and lower SLM halves; zero-phase regions still transmit light. The complex field is center-padded or cropped to the optical plane, then passes through
 
 \[
 E_{\rm CCD,k}=O_2\,B\,D(\theta_k)\,A\,O_1 E_{\rm SLM,k},\qquad
 r_{k+1}=(1-\alpha)r_k+\alpha\,\operatorname{camera}(|E_{\rm CCD,k}|^2).
 \]
 
-`camera` 包含噪声、固定增益、下采样与截断；这里使用标准 leaky-update 的凸组合，\(\alpha=1\) 时不额外保留数字 leak，仍有通过 SLM 的光学反馈。\(A,B\) 是固定的两段随机散射，\(O_1,O_2\) 是 objective 的 Fourier pupil。热屏插在两段散射之间：
+`camera` includes noise, fixed gain, downsampling and clipping. The standard leaky update is a convex combination; at \(\alpha=1\), there is no additional digital leak, but feedback through the SLM remains. \(A,B\) are two fixed random scattering stages and \(O_1,O_2\) are the objective Fourier pupils. The thermal screen lies between the scattering stages:
 
 \[
 a=e^{-\Delta t/\tau},\quad \theta_k=a\theta_{k-1}+(1-a)u_k,\quad
 D_{pp}(\theta_k)=e^{i\phi_{\max}\theta_k G_p}.
 \]
 
-假设同一输入**另行控制**归一化加热功率；这不是仅有相位调制便必然发生的结果。高斯 (G_p) 在约 10% 的内部平面上非零，其余位置 (D=1)。测量噪声是 CCD state 的一部分，会进入反馈。
+The same input is assumed to **separately control** normalized heating power; phase modulation alone does not guarantee this coupling. The Gaussian \(G_p\) is nonzero over about 10% of the internal plane, with \(D=1\) elsewhere. Measurement noise is part of the CCD state and enters the feedback.
 
-记上、下 SLM 区域投影为 \(P_{\rm res},P_{\rm in}\)，则线性复光场传播的两个有效块为
+Let \(P_{\rm res},P_{\rm in}\) project onto the upper and lower SLM regions. The two effective blocks of the linear complex-field propagation are
 \[
 W_{\rm res}(k)=O_2BD(\theta_k)AO_1P_{\rm res},\quad
 W_{\rm in}(k)=O_2BD(\theta_k)AO_1P_{\rm in}.
 \]
-它们不是每步重新抽样的随机矩阵，也没有存储为稠密矩阵；当前输入、状态先经过 SLM 的指数相位编码，CCD 再平方律探测。动态 \(W\) 对应的是复光场层面的有效映射。
+These are neither resampled random matrices at each step nor stored as dense matrices. The current input and state first undergo exponential phase encoding at the SLM, followed by square-law CCD detection. The dynamic \(W\) blocks describe effective maps of the complex field.
 ''')
 code('''
 import numpy as np
@@ -71,16 +71,16 @@ print('Heated support fraction:', float(model.heater_support.float().mean()))
 print('Noise parameters:', noise)
 ''')
 md(r'''
-## 2. 物镜 pupil 与物理噪声
+## 2. Objective pupils and physical noise
 
-有限 pupil 是确定性的空间频率滤波，**不是噪声**。这里分别提供：
+A finite pupil performs deterministic spatial-frequency filtering; it is **not noise**. The available parameters are:
 
-- `pupil_rms_rad`：两个 pupil 内固定的 defocus/astigmatism 波前误差（弧度 RMS）；
-- `slm_phase_std_rad`：逐帧 SLM 相位抖动标准差；
-- `shot_noise` / `photon_scale`：按 CCD 期望光子数采样 Poisson 散粒噪声；
-- `read_noise_electrons`：CCD 电子读出噪声标准差。
+- `pupil_rms_rad`: fixed defocus/astigmatism wavefront error in the pupils (radians RMS);
+- `slm_phase_std_rad`: per-frame SLM phase jitter standard deviation;
+- `shot_noise` / `photon_scale`: Poisson shot noise sampled from the expected CCD photon count;
+- `read_noise_electrons`: CCD electronic readout noise standard deviation.
 
-噪声在相机固定增益和下采样之前加入；不对每帧做 min–max 归一化。所有值是示例，尤其 `photon_scale` 不是已知光功率。改变 `common` 中的 pupil radius、分辨率、增益和泄漏率即可扫描。
+Noise is added before fixed camera gain and downsampling; frames are not individually min–max normalized. Values are illustrative, and `photon_scale` in particular is not a measured optical power. Change pupil radius, resolution, gain and leak rate in `common` to scan them.
 ''')
 code('''
 example_input = np.random.default_rng(7).random(50)
@@ -105,9 +105,9 @@ print('SLM field amplitude range:', np.abs(snap['slm_field']).min(), np.abs(snap
 print('Unit amplitude gives a white |E| image; phase information is in the phase panel.')
 ''')
 md(r'''
-## 3. 两个有效传播块是否同时随温度变化？
+## 3. Do both effective propagation blocks change with temperature?
 
-使用同一组随机器件、关闭逐帧噪声，对同一个测试复场分别只保留上下半屏；比较 \(\theta=0\) 和 \(\theta=1\) 时 CCD 的**复光场**。这是检验两个有效算子变化的示例，不是完整 transmission matrix 的测量。
+With the same random device and per-frame noise disabled, retain the upper and lower halves of the same test complex field in turn and compare the CCD **complex fields** at \(\theta=0\) and \(\theta=1\). This illustrates changes in the two effective operators; it is not a measurement of the full transmission matrix.
 ''')
 code('''
 probe_model = OpticalFeedbackThermalRC(**common, heater_mode='driven', feedback=True, noise=ideal)
@@ -144,15 +144,15 @@ for ax in axes: ax.axis('off')
 plt.show()
 ''')
 md(r'''
-## 4. Ridge readout，与 ESN 的输出训练方式相同
+## 4. Ridge readout, as used to train ESN outputs
 
-用 (r_{k+1}) 展开成向量，训练数据标准化后加 bias，得到行向量 \(z_k=[1,\widetilde r_{k+1}^T]\)。训练目标为 \(y_k=u_{k+1}\)：
+Flatten \(r_{k+1}\), standardize using training data and add a bias to obtain the row vector \(z_k=[1,\widetilde r_{k+1}^T]\). The training target is \(y_k=u_{k+1}\):
 
 \[
 W_{\rm out}=(Z^TZ+\lambda P)^{-1}Z^TY,\quad P=\mathrm{diag}(0,1,\ldots,1),\quad \hat Y=ZW_{\rm out}.
 \]
 
-仅训练 \(W_{\rm out}\)，bias 不正则化。代码通过线性方程求解，训练集拟合特征标准化，验证集从固定候选中选 \(\lambda\)，再用训练+验证段拟合；测试段不参与任何拟合。预测为 teacher-forced：测试时持续输入真实 \(u_k\)。
+Only \(W_{\rm out}\) is trained; the bias is not regularized. The code solves a linear system, fits feature standardization on the training set, selects \(\lambda\) from fixed candidates on the validation set, then fits on training plus validation. The test set is excluded from fitting. Prediction is teacher-forced: the true \(u_k\) is supplied throughout testing.
 ''')
 code('''
 series = np.loadtxt(Path('MackeyGlass_t17.txt')).reshape(-1)
@@ -213,11 +213,11 @@ fig, ax = plt.subplots(figsize=(5, 4)); im=ax.imshow(weights, cmap='coolwarm')
 ax.set_title('Ridge W_out on standardized CCD state'); fig.colorbar(im, ax=ax); plt.show()
 ''')
 md(r'''
-## 5. 记忆的对照：独立随机输入延迟重建
+## 5. Memory control: delayed reconstruction of independent random inputs
 
-Mackey–Glass 相邻点高度相关，静态映射或 persistence 也可能预测一步；低误差本身不能证明 fading memory。下面用独立随机序列训练不同 readout，以当前 CCD state 重建过去的 \(u_{k-d}\)。训练/测试按时间连续划分；\(R^2<0\) 表示比测试均值基线更差。
+Adjacent Mackey–Glass samples are highly correlated, so a static mapping or persistence can also predict one step ahead; low error alone does not demonstrate fading memory. Independent random inputs train separate readouts to reconstruct past \(u_{k-d}\) from the current CCD state. Train and test are consecutive time segments; \(R^2<0\) means worse than the test-mean baseline.
 
-无热 + feedback 可以有**电子反馈记忆**；thermal + no feedback（\(\alpha=1\)）用于观察热记忆；thermal + feedback 包含两者。一个标量 \(\theta\) 仍只表示一个独立热状态。要评估统计稳定性，应再更换多个随机种子、噪声水平与时间常数。
+No heater plus feedback can have **electronic feedback memory**; thermal plus no feedback (\(\alpha=1\)) isolates thermal memory, while thermal plus feedback includes both. A scalar \(\theta\) still represents only one independent thermal state. Assess statistical stability over multiple random seeds, noise levels and time constants.
 ''')
 code('''
 random_u = np.random.default_rng(2026).random(2000)
