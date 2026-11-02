@@ -26,6 +26,7 @@ python -m notebook
 - `thermal_disorder_rc.py`、`run_thermal_rc_demo.py` 和 `THERMAL_RC_MODEL.md`：上一版输入驱动热模型及演示，模型假设与主 notebook 不同。
 - `make_thermal_notebook.py` 和 `execute_thermal_notebook.py`：可选的 notebook 生成和运行脚本。生成脚本会覆盖当前目录中的同名 notebook。
 - `output/thermal_rc_diagnostics.png`：上一版输入驱动模型的诊断结果。
+- `references/`：建模时参考的部分原始 notebook 和项目 PDF。主实验不依赖这些参考文件。
 
 ## 模型范围
 
