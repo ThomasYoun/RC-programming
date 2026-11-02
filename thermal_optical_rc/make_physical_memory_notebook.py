@@ -173,7 +173,9 @@ plt.show()
 md(r'''
 ## 6. Mackey–Glass 单步预测
 
-时间顺序划分 1,600 个训练输入、400 个验证输入、1,000 个测试输入。仅用训练段确定输入归一化；状态跨 train/validation/test **连续演化，不重置**。readout 仅使用 \(r_k\) 与 bias。验证段选择 ridge 参数，再使用训练和验证样本拟合；分界处标签不越界。测试以真实输入驱动，属于 teacher-forced 预测。
+时间顺序划分：**前 2,000 步为训练段（含前 200 步 washout），随后 1,000 步为测试段**。训练段末尾 400 步只在训练内部用于选择 ridge 参数，选定后使用全部可用的 washout 后训练样本重新拟合。输入归一化只用内部拟合段确定；热状态跨训练和测试边界 **连续演化，不重置**。
+
+readout 仅使用 \(r_k\) 与 bias，目标为 \(u_{k+1}\)。这里按**输入时刻**划分：测试输入为索引 2000–2999，其一步预测目标为索引 2001–3000（零起始索引）。为避免把测试区间的第一个数值当作训练标签，训练段的最后一个输入仍送入系统，但不用于拟合目标；因此 2,000 步训练段、200 步 washout 后，最终有 **1,799 个**监督训练样本。测试以真实输入驱动，属于 teacher-forced 预测。
 
 对照包括无热、固定热、即时热、不同 \(\tau\) 的输入驱动热状态、噪声开关和 persistence。静态光学映射也可能预测自相关时间序列，因此请结合下节的独立随机输入延迟重建解释。
 
@@ -188,17 +190,20 @@ W_{\rm out}=(Z^TZ+\lambda P)^{-1}Z^TY,
 ''')
 code('''
 series = np.loadtxt(Path('MackeyGlass_t17.txt')).reshape(-1)
-n_train, n_valid, n_test, washout = 1600, 400, 1000, 100
-split = n_train+n_valid
-assert len(series) >= split+n_test+1
-lo, hi = series[:n_train].min(), series[:n_train].max()
-u_raw = (series[:split+n_test]-lo)/(hi-lo)
+train_length, validation_length, test_length, washout = 2000, 400, 1000, 200
+fit_end = train_length-validation_length
+assert len(series) >= train_length+test_length+1
+lo, hi = series[:fit_end].min(), series[:fit_end].max()
+u_raw = (series[:train_length+test_length]-lo)/(hi-lo)
 u = np.clip(u_raw, 0, 1)
-y = (series[1:split+n_test+1]-lo)/(hi-lo)
-train = np.arange(washout, n_train-1)
-valid = np.arange(n_train, split-1)
-fit_all = np.arange(washout, split-1)
-test = np.arange(split, split+n_test)
+y = (series[1:train_length+test_length+1]-lo)/(hi-lo)
+train = np.arange(washout, fit_end-1)
+valid = np.arange(fit_end, train_length-1)
+fit_all = np.arange(washout, train_length-1)
+test = np.arange(train_length, train_length+test_length)
+print(f'Train steps: {train_length}, washout: {washout}, fit samples: {len(fit_all)}, test steps: {len(test)}')
+print(f'Test input indices: {test[0]}–{test[-1]}; target indices: {test[0]+1}–{test[-1]+1}')
+assert fit_all[-1]+1 < train_length and len(test)==test_length
 print('Test input clipping fraction:', np.mean(u_raw[test] != u[test]))
 print('Test correlation of u[k] and u[k+1]:', np.corrcoef(u[test], y[test])[0, 1])
 cases = [
@@ -241,19 +246,19 @@ ax.set_title('W_out on standardized speckle features'); fig.colorbar(im, ax=ax);
 md(r'''
 ## 7. 独立随机输入的历史重建
 
-产生 i.i.d. 输入，仅根据当前 \(r_k\) 重建 \(u_{k-d}\)，连续训练/测试切分；这比 Mackey–Glass 一步预测更直接检验过去输入能否从 speckle 读出。负的测试 \(R^2\) 表示比测试均值基线更差。不同 \(\tau\) 保持热稳态增益相同。实验包含相机噪声，应进一步更换多个随机种子和参数确认稳健性。
+产生 3,000 个 i.i.d. 输入，仅根据当前 \(r_k\) 重建 \(u_{k-d}\)：前 2,000 步为训练段（前 200 步 washout），后 1,000 步测试。这比 Mackey–Glass 一步预测更直接检验过去输入能否从 speckle 读出。负的测试 \(R^2\) 表示比测试均值基线更差。不同 \(\tau\) 保持热稳态增益相同。实验包含相机噪声，应进一步更换多个随机种子和参数确认稳健性。
 ''')
 code('''
-random_u = np.random.default_rng(2026).random(2000)
+random_u = np.random.default_rng(2026).random(3000)
 memory_cases = cases[3:]
-delays = np.array([1, 2, 4, 8, 16]); split_memory = 1400
+delays = np.array([1, 2, 4, 8, 16]); split_memory = 2000
 memory_scores = {}
 for label, mode, tau, noise_config in memory_cases:
     m = PhysicalMemoryOptics(**common, tau=tau, heat_mode=mode, noise=noise_config)
     features, _, _, _ = m.run(random_u)
     values = []
     for delay in delays:
-        tr = np.arange(100, split_memory); te = np.arange(split_memory, len(random_u))
+        tr = np.arange(200, split_memory); te = np.arange(split_memory, len(random_u))
         pred = RidgeReadout(10.0).fit(features[tr], random_u[tr-delay]).predict(features[te])
         target = random_u[te-delay]
         values.append(1-np.sum((target-pred)**2)/np.sum((target-target.mean())**2))
@@ -267,7 +272,7 @@ ax.legend(fontsize=7); ax.grid(alpha=.2); plt.show()
 md(r'''
 ## 8. 非线性是否可读出？
 
-使用独立随机输入 \(x_k=2u_k-1\)，测试二阶 \(P_2(x)=(3x^2-1)/2\) 与当前/过去乘积。分别比较无热、不同 \(\tau\) 的热记忆，以及固定 probe、仅加热序列变化的条件。固定 probe 帮助区分 SLM 当前输入编码和“热相位→干涉→CCD”的非线性。每个任务只用验证段选择 ridge，报告未参与拟合的测试 \(R^2\)。
+使用独立随机输入 \(x_k=2u_k-1\)，测试二阶 \(P_2(x)=(3x^2-1)/2\) 与当前/过去乘积。前 2,000 步为训练段（含 200 步 washout），后 1,000 步测试；训练段内部划分验证集。分别比较无热、不同 \(\tau\) 的热记忆，以及固定 probe、仅加热序列变化的条件。固定 probe 帮助区分 SLM 当前输入编码和“热相位→干涉→CCD”的非线性。每个任务只用验证段选择 ridge，报告未参与拟合的测试 \(R^2\)。
 ''')
 code('''
 nl_u = np.random.default_rng(213).random(3000)
@@ -275,7 +280,7 @@ x = 2*nl_u-1
 targets = {'current P2': .5*(3*x*x-1),
            'delay-1 P2': .5*(3*np.roll(x, 1)**2-1),
            'current × delay-1': x*np.roll(x, 1)}
-nl_train = np.arange(100, 1700); nl_valid = np.arange(1700, 2200); nl_test = np.arange(2200, len(nl_u))
+nl_train = np.arange(200, 1600); nl_valid = np.arange(1600, 2000); nl_test = np.arange(2000, len(nl_u))
 nl_cases = [('No heat', 'off', 2, False), ('Thermal τ=2', 'driven', 2, False),
             ('Thermal τ=8', 'driven', 8, False), ('τ=2 fixed probe', 'driven', 2, True)]
 def score_r2(target, prediction, indices):
