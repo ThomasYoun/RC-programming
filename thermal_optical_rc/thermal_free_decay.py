@@ -1,7 +1,6 @@
-"""Fixed disordered optics with a single freely cooling phase screen.
+"""Fixed disordered optics with a single, optionally input-driven thermal state.
 
-All experiments share the same instance, hence exactly the same A and B.
-The heat source is switched off before k=0; no input heats the sample.
+All experiments share the same optical instance; no camera feedback is used.
 """
 
 from dataclasses import dataclass
@@ -16,21 +15,40 @@ class Condition:
     phase_max: float
     tau: float | None  # None means a static temperature
     theta0: float = 1.0
+    mode: str = 'free'  # 'free', 'driven', 'instant', or 'static'
 
-    def temperature(self, k, dt=1.0):
-        k = np.asarray(k, dtype=np.float64)
+    def trajectory(self, inputs, dt=1.0):
+        """Theta sampled after input k: exact zero-order-hold relaxation."""
+        inputs = np.asarray(inputs, dtype=np.float64).reshape(-1)
+        if self.mode == 'static' or (self.mode == 'free' and self.tau is None):
+            return np.full(len(inputs), self.theta0)
+        if self.mode == 'instant':
+            if np.any((inputs < 0) | (inputs > 1)):
+                raise ValueError('Driven heater power must be within [0, 1]')
+            return inputs.copy()
+        if self.mode not in ('free', 'driven'):
+            raise ValueError('mode must be static, free, driven, or instant')
         if self.tau is None:
-            return np.full_like(k, self.theta0)
+            raise ValueError('tau is required for a dynamic condition')
         if self.tau <= 0 or dt <= 0:
             raise ValueError('tau and dt must be positive')
-        return self.theta0 * np.exp(-k * dt / self.tau)
+        if self.mode == 'free':
+            return self.theta0 * np.exp(-np.arange(len(inputs))*dt/self.tau)
+        if np.any((inputs < 0) | (inputs > 1)):
+            raise ValueError('Driven heater power must be within [0, 1]')
+        decay = np.exp(-dt/self.tau)
+        state = self.theta0  # theta immediately before first input
+        values = np.empty(len(inputs))
+        for k, drive in enumerate(inputs):
+            state = decay*state + (1-decay)*drive
+            values[k] = state
+        return values
 
 
 class FixedDisorderedOptics:
     """SLM -> objective 1 -> fixed scattering -> heater -> objective 2 -> CCD.
 
-    The upper half of the SLM is a fixed zero-phase reference and the lower
-    half encodes the input image.  No CCD image is fed back to the SLM.
+    The complete SLM encodes the current input image. No CCD image is fed back.
     A and B are fixed implicit random mixing operators, not measured media.
     """
     def __init__(self, shape=(128, 128), camera_shape=(16, 16),
@@ -93,15 +111,9 @@ class FixedDisorderedOptics:
         return F.pad(cropped, (left, tw-cw-left, top, th-ch-top))
 
     def _slm_field(self, u):
-        """Binary threshold encoding and vertical input/reference concatenation."""
-        batch = len(u)
+        """Threshold the fixed mask and expand the image over the entire SLM."""
         image = (self.input_mask[None] <= u[:, None, None]).float()
-        upper_h = self.slm_shape[0]//2
-        reference = torch.zeros((batch, upper_h, self.slm_shape[1]), device=self.device)
-        lower = self._center_pad_crop(image, (self.slm_shape[0]-upper_h, self.slm_shape[1]))
-        phase_pattern = torch.cat((reference, lower), dim=1)
-        # Like the source notebook, padding on the SLM is zero phase, not
-        # an opaque aperture: exp(i*0) = 1 over the illuminated SLM.
+        phase_pattern = F.interpolate(image[:, None], size=self.slm_shape, mode='nearest')[:, 0]
         return image, phase_pattern, torch.exp(1j*torch.pi*phase_pattern)
 
     @staticmethod
