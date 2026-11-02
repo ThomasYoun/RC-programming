@@ -36,6 +36,6 @@ python -m notebook
 
 ## 模型范围
 
-主实验光路是 `O2 B D[k] A O1`：`A`、`B` 是固定随机散射的两个阶段，`O1` 和 `O2` 为圆形 pupil，`D[k]` 是散射内部有效平面上的高斯热相位屏，占该平面约十分之一。后续混合传播可使 CCD 更大范围发生变化。这是简化模型，尚未对特定材料标定。整个 SLM 仅编码当前输入，CCD 的降采样强度是观测特征，不反馈至 SLM。
+主实验光路是 `O2 B D[k] A O1`：`A`、`B` 是固定随机散射的两个阶段，`O1` 和 `O2` 为圆形 pupil，`D[k]` 是散射内部有效平面上的高斯热相位屏，占该平面约十分之一。整个 SLM 仅编码当前输入，默认 `phase = π u (0.5 + 0.5 M)`，固定随机空间 mask `M` 使所有 SLM 像素连续响应输入。SLM 全平面输入与局部热源是不同概念。CCD 的降采样强度是观测特征，不反馈至 SLM。这是简化模型，尚未对特定材料标定。
 
-输入驱动条件按 `a = exp(-dt/tau)`、`theta[k+1] = a*theta[k] + beta*u[k]` 演化，读出采用 `r[k] = H(theta[k], u[k])`，没有电子反馈。默认 `beta=(1-a)*thermal_gain`，也可以显式设置 `beta`；同一输入控制加热功率是需要实验支持的假设。pupil 是确定性滤波，模型另提供 pupil 静态波前误差、SLM 相位抖动、CCD 光子散粒噪声和电子读出噪声。`W_out` 用 ESN 常见的 ridge 回归拟合；Mackey–Glass teacher-forced 单步预测应结合 persistence 和随机输入延迟重建一起理解。
+输入驱动条件按 `a = exp(-dt/tau)`、`theta[k+1] = a*theta[k] + beta*u[k]` 演化，读出采用 `r[k] = H(theta[k], u[k])`，没有电子反馈。默认 `beta=(1-a)*thermal_gain`，也可以显式设置 `beta`；同一输入控制加热功率是需要实验支持的假设。pupil 是确定性滤波，模型另提供 pupil 静态波前误差、SLM 相位抖动、CCD 光子散粒噪声和电子读出噪声。本版将示例噪声增大并与前一版比较，这些值未经实验标定。`W_out` 用 ESN 常见的 ridge 回归拟合；Mackey–Glass teacher-forced 单步预测应结合 persistence、随机输入延迟重建和二阶任务一起理解。
