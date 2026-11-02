@@ -24,9 +24,9 @@ class PhysicalMemoryOptics:
     """Fixed SLM-to-CCD optical propagation with one scalar heat state."""
     def __init__(self, optical_shape=(128, 128), slm_shape=(128, 128),
                  input_shape=(32, 32), camera_shape=(16, 16),
-                 pupil_radius=(0.25, 0.25), heater_fraction=0.1,
+                 pupil_radius=(0.25, 0.25), heater_fraction=0.8,
                  heater_phase_max=6.0, tau=8.0, dt=1.0, beta=None,
-                 thermal_gain=1.0, heat_mode='driven', static_theta=0.5,
+                 thermal_gain=1.3, heat_mode='driven', static_theta=None,
                  scatter_scale=0.8, optical_gain=0.8,
                  slm_encoding='continuous_global',
                  noise=PhysicalNoise(), seed=42, noise_seed=123, device='cpu'):
@@ -38,8 +38,8 @@ class PhysicalMemoryOptics:
         if any(len(s) != 2 or any(v <= 0 for v in s) for s in
                (self.optical_shape, self.slm_shape, self.input_shape, self.camera_shape)):
             raise ValueError('all shapes must contain two positive dimensions')
-        if not (0 < heater_fraction <= 1 and tau > 0 and dt > 0):
-            raise ValueError('heater_fraction must be in (0,1]; tau, dt must be positive')
+        if not (0 < heater_fraction <= 1 and tau > 0 and dt > 0 and thermal_gain >= 0):
+            raise ValueError('heater_fraction must be in (0,1]; tau and dt positive; thermal_gain non-negative')
         if len(pupil_radius) != 2 or any(not 0 < r <= 1 for r in pupil_radius):
             raise ValueError('pupil radii must be in (0,1]')
         if heat_mode not in ('driven', 'off', 'static', 'instant'):
@@ -55,7 +55,8 @@ class PhysicalMemoryOptics:
         self.beta = float((1-self.a)*thermal_gain if beta is None else beta)
         if self.beta < 0 or not np.isfinite(self.beta):
             raise ValueError('beta must be finite and non-negative')
-        self.heat_mode, self.static_theta = heat_mode, float(static_theta)
+        self.heat_mode, self.thermal_gain = heat_mode, float(thermal_gain)
+        self.static_theta = 0.5*self.thermal_gain if static_theta is None else float(static_theta)
         self.heater_phase_max, self.optical_gain = float(heater_phase_max), float(optical_gain)
         self.noise, self.noise_seed = noise, noise_seed
         self.slm_encoding = slm_encoding
@@ -148,7 +149,7 @@ class PhysicalMemoryOptics:
         elif self.heat_mode == 'static':
             theta_read = self.static_theta
         elif self.heat_mode == 'instant':
-            theta_read = heat_input
+            theta_read = self.thermal_gain*heat_input
         else:
             theta_read = self.theta
         input_image, slm_phase, slm_field = self._encode_input(u)
