@@ -11,14 +11,14 @@ def code(text):
     cells.append({'cell_type': 'code', 'metadata': {}, 'execution_count': None, 'outputs': [], 'source': textwrap.dedent(text).strip().splitlines(keepends=True)})
 
 md(r'''
-# 输入驱动的物理热记忆：无电子反馈 optical RC
+# Input-Driven Physical Thermal Memory: Optical Reservoir Computing Without Electronic Feedback
 
-本框架把温度作为材料内部动态状态：外部输入驱动热状态演化，同一输入通过 SLM 编码弱 probe，热状态通过局部相位屏改变固定的散射传播，CCD speckle 给出可观测特征。
+This framework treats temperature as the material's internal dynamical state. The external input drives thermal evolution and encodes a weak probe on the SLM. A thermal phase screen changes the fixed scattering propagation, and the CCD speckle provides observable features.
 
-**没有 CCD→SLM 电子反馈，没有 state/input 拼接。** SLM 整个有效区域仅编码当前输入；只训练数字线性 readout。需要同目录的 `optical_physical_memory.py`、`MackeyGlass_t17.txt`，及 NumPy、PyTorch、Matplotlib、Jupyter。
+**There is no CCD-to-SLM electronic feedback and no state/input concatenation.** The entire active SLM area encodes only the current input; only the digital linear readout is trained. This notebook requires `optical_physical_memory.py` and `MackeyGlass_t17.txt` in the same directory, plus NumPy, PyTorch, Matplotlib and Jupyter.
 ''')
 md(r'''
-## 1. 状态方程和因果顺序
+## 1. State equation and causal timing
 
 \[
 a=e^{-\Delta t/\tau},\qquad
@@ -26,14 +26,14 @@ a=e^{-\Delta t/\tau},\qquad
 \qquad r_k=H(\theta_k,u_k),\qquad \hat y_k=W_{\rm out}[1;r_k].
 \]
 
-**每个时间步**：① 用当前输入 \(u_k\) 和曝光前温度 \(\theta_k\) 产生 speckle 特征 \(r_k\)；② 当前加热写入 \(\theta_{k+1}\)。因而 \(r_k\) 可包含当前输入和 \(u_0,\ldots,u_{k-1}\) 的热痕迹；本 notebook 的一步预测目标为 \(y_k=u_{k+1}\)。
+**At each time step:** first, the current input \(u_k\) and pre-exposure temperature \(\theta_k\) produce the speckle features \(r_k\); second, the current heating updates \(\theta_{k+1}\). Thus, \(r_k\) can contain the current input and thermal traces of \(u_0,\ldots,u_{k-1}\). The one-step prediction target in this notebook is \(y_k=u_{k+1}\).
 
-实现中可直接指定 `beta`。默认 `beta=None` 时取 \(\beta=(1-a)g_{\rm th}\)：这仍是线性 \(\beta u_k\)，且改变 \(\tau\) 时常量输入下的稳态增益 \(g_{\rm th}\) 保持一致。如果实际实验要求固定每次注入量，应显式给 `beta`。
+`beta` can be specified directly. With the default `beta=None`, the model uses \(\beta=(1-a)g_{\rm th}\). The write term remains linear in \(u_k\), while the steady-state gain under a constant input remains \(g_{\rm th}\) as \(\tau\) changes. Set `beta` explicitly if the experiment requires a fixed injection per step.
 
-\(u_k\) 必须控制非负吸收功率；代码假设同一归一化输入驱动 heater，同时编码 probe。两束光或输入相关吸收如何耦合是**建模假设**，需要在装置中实现与标定；相位 SLM 本身不会自动保证这种耦合。
+\(u_k\) must control non-negative absorbed power. The code assumes that the same normalized input drives the heater and encodes the probe. How the two beams or input-dependent absorption are coupled is a **model assumption** that must be implemented and calibrated in the apparatus; a phase-only SLM does not automatically provide this coupling.
 ''')
 md(r'''
-## 2. 光学映射与观测
+## 2. Optical mapping and observation
 
 \[
 E_{\rm SLM,k}=e^{i\pi\Phi(u_k)},\qquad
@@ -44,18 +44,18 @@ D_{pp}(\theta_k)=e^{i\phi_{\max}\theta_kG_p},\qquad
 r_k=\operatorname{downsample}(|E_{\rm CCD,k}|^2).
 \]
 
-输入连续作用于整个 SLM：\(\Phi_p(u_k)=u_k(0.5+0.5M_p)\)，其中固定随机空间 mask \(M_p\in[0,1]\)，因此每个 SLM 像素都随 \(u_k\) 改变相位，而不是只切换部分阈值像素。空间 mask 的作用是避免整个 SLM 只获得相同全局相位；若 phase-only 输入在所有点严格相同，只形成公共相位，理想强度探测无法看到其变化。可选 `slm_encoding='binary_threshold'` 恢复以前的阈值编码。
+The input continuously modulates the entire SLM: \(\Phi_p(u_k)=u_k(0.5+0.5M_p)\), where the fixed random spatial mask \(M_p\in[0,1]\). Every SLM pixel therefore changes phase with \(u_k\), rather than only switching pixels whose thresholds are crossed. The spatial mask prevents the entire SLM from acquiring the same global phase; if the phase-only modulation were identical everywhere, ideal intensity detection would not reveal a change. Set `slm_encoding='binary_threshold'` to restore the earlier threshold encoding.
 
-\(O_1,O_2\) 是 objective Fourier pupil，\(A,B\) 为一次生成并固定的随机复振幅传播过程。高斯热源的 support 占中间有效平面约 **80%**；加热增益由 1.0 提高到 **1.3**，即相同加热输入下的稳态热状态提高 30%。\(D=1\) 于 support 之外。全平面 SLM 输入和热源的空间区域是两个独立的概念。增大 support 时高斯宽度也按面积扩大；support 不是均匀温度区域。
+\(O_1,O_2\) are objective Fourier pupils, and \(A,B\) are fixed random complex-amplitude propagation operators generated once. The Gaussian heater support covers approximately **80%** of the effective intermediate plane. Its heating gain was increased from 1.0 to **1.3**, increasing the steady-state thermal state by 30% for the same heating input. \(D=1\) outside the support. The full-plane SLM input and the heater's spatial region are distinct. Increasing the support also broadens the Gaussian according to its area; temperature is not uniform inside the support.
 
-若定义实际温升为 \(\Delta T_p=T_s\theta_kG_p\)，并假设热光系数和有效受热厚度在局部近似均匀，则
+If the physical temperature rise is \(\Delta T_p=T_s\theta_kG_p\), and the thermo-optic coefficient and effective heated thickness are approximately uniform locally, then
 \[
 \Delta n_p\approx\frac{dn}{dT}\Delta T_p,\qquad
 \delta\phi_p\approx\frac{2\pi}{\lambda}L_{\rm eff}\frac{dn}{dT}T_s\theta_kG_p.
 \]
-模型用单个可调参数 \(\phi_{\max}\) 合并这些尚未标定的物理量；这给出从温度、折射率到相位的近似桥梁。
+The model combines these uncalibrated physical quantities into one adjustable parameter, \(\phi_{\max}\), providing an approximate link from temperature to refractive index to phase.
 
-\(\theta_k\) 是内部 reservoir state；\(r_k\) 是相机观测向量，而非反馈状态。一个标量温度只提供一个独立热动态变量，256 个 CCD 特征不会自动变成 256 个独立的热记忆。热相位屏是温度到 transmission matrix 的有效近似，不是完整的热扩散或折射率求解。
+\(\theta_k\) is the internal reservoir state; \(r_k\) is a camera observation vector, not a feedback state. A scalar temperature supplies only one independent thermal dynamical variable; 256 CCD features do not automatically provide 256 independent thermal memories. The thermal phase screen is an effective approximation of the temperature-dependent transmission matrix, not a complete heat-diffusion or refractive-index solution.
 ''')
 code('''
 import numpy as np
@@ -82,11 +82,11 @@ print(f'a = {model.a:.6f}; beta = {model.beta:.6f}; thermal gain = {model.therma
 print('Input, SLM, optical, CCD features:', model.input_shape, model.slm_shape, model.optical_shape, model.camera_shape)
 ''')
 md(r'''
-## 3. 检查 SLM、pupil 和 CCD
+## 3. Inspect the SLM, pupils and CCD
 
-物镜的有限 pupil 是确定性滤波；额外的固定 pupil 波前误差、SLM 相位抖动、CCD Poisson shot noise 和读出噪声分别可调。与前一版相比，示例中的 pupil 像差从 0.06 增至 0.18 rad、SLM 抖动从 0.015 增至 0.06 rad、`photon_scale` 从 50,000 降至 5,000（提高相对散粒噪声）、读出噪声从 1 增至 3 电子。这些都是未经标定的示例；pupil 像差是静态器件差异，其余为逐次曝光噪声。每帧不做 min–max 归一化。
+The finite objective pupil is a deterministic filter. Fixed pupil wavefront error, SLM phase jitter, CCD Poisson shot noise and read noise are separately adjustable. Relative to the previous version, the example increases pupil aberration from 0.06 to 0.18 rad and SLM jitter from 0.015 to 0.06 rad, reduces `photon_scale` from 50,000 to 5,000 to increase relative shot noise, and increases read noise from 1 to 3 electrons. These values are uncalibrated examples. Pupil aberration is a static device difference; the other noise sources vary between exposures. Frames are not individually min–max normalized.
 
-`|E_SLM|=1` 的白图是 phase-only SLM 的正常振幅；灰度相位图展示整个 SLM 的连续空间相位及抖动。
+The white `|E_SLM|=1` image is the expected amplitude of a phase-only SLM; the grayscale phase image shows the continuous spatial phase and jitter across the whole SLM.
 ''')
 code('''
 sample_inputs = np.random.default_rng(7).random(50)
@@ -125,9 +125,9 @@ for name, cfg in [('previous noise', previous_noise), ('strong noise', noise)]:
     print(f'{name}: pooled-feature temporal std / mean = {relative_fluctuation:.2%}')
 ''')
 md(r'''
-## 4. 脉冲写入与指数消退：验证公式时序
+## 4. Pulse input and exponential decay: verify the timing
 
-输入脉冲为 \(u_0=1\)，随后为零，初始 \(\theta_0=0\)。预期相机使用的温度依次为 \(\theta_0=0\)、\(\theta_1=\beta\)、\(\theta_2=a\beta\)，之后按 \(a\) 衰减。图中 0 值不是延迟错误，而是本实验规定曝光后再写入温度。
+The input pulse is \(u_0=1\), followed by zeros, with initial \(\theta_0=0\). The temperatures used by the camera should be \(\theta_0=0\), \(\theta_1=\beta\), \(\theta_2=a\beta\), followed by decay by a factor of \(a\) per step. The initial zero is intentional: this experiment updates the temperature after the exposure.
 ''')
 code('''
 thermal = PhysicalMemoryOptics(**common, tau=8, heat_mode='driven', noise=ideal)
@@ -144,9 +144,9 @@ ax.legend(); plt.show()
 print('Maximum recursion error:', np.max(np.abs(theta-expected)))
 ''')
 md(r'''
-## 5. 同一当前输入，不同输入历史
+## 5. Same current input, different input histories
 
-固定同一随机器件和 probe，在最后一步输入相同；比较之前 40 步全 0 与全 1 的热历史。为隔离记忆，这里关闭噪声，并与无热、静态热、即时响应对照。最后一步使用 \(\theta_k\) 而不是提前写入的 \(\theta_{k+1}\)。
+Keep the same random optical device and use the same probe at the final step; compare heating histories of all zeros and all ones over the preceding 40 steps. To isolate memory, noise is disabled and the result is compared with no-heat, static-heat and instantaneous-response controls. The final exposure uses \(\theta_k\), not the subsequently updated \(\theta_{k+1}\).
 ''')
 code('''
 history0 = np.r_[np.zeros(40), 0.5]
@@ -171,22 +171,22 @@ for ax, arr, title in zip(axes, [s0['ccd_ideal'], s1['ccd_ideal'], delta_image],
 plt.show()
 ''')
 md(r'''
-## 6. Mackey–Glass 单步预测
+## 6. Mackey–Glass one-step prediction
 
-时间顺序划分：**前 2,000 步为训练段（含前 200 步 washout），随后 1,000 步为测试段**。训练段末尾 400 步只在训练内部用于选择 ridge 参数，选定后使用全部可用的 washout 后训练样本重新拟合。输入归一化只用内部拟合段确定；热状态跨训练和测试边界 **连续演化，不重置**。
+Chronological split: **the first 2,000 steps form the training segment, including the first 200 washout steps, followed by 1,000 test steps**. The final 400 steps of the training segment are used internally to select the ridge parameter. Once selected, the readout is refit on all available post-washout training samples. Input normalization is determined only from the internal fitting segment; the thermal state **continues across the training/test boundary without resetting**.
 
-readout 仅使用 \(r_k\) 与 bias，目标为 \(u_{k+1}\)。这里按**输入时刻**划分：测试输入为索引 2000–2999，其一步预测目标为索引 2001–3000（零起始索引）。为避免把测试区间的第一个数值当作训练标签，训练段的最后一个输入仍送入系统，但不用于拟合目标；因此 2,000 步训练段、200 步 washout 后，最终有 **1,799 个**监督训练样本。测试以真实输入驱动，属于 teacher-forced 预测。
+The readout uses only \(r_k\) and a bias; its target is \(u_{k+1}\). The split follows **input time**: test inputs have zero-based indices 2000–2999, and their one-step targets have indices 2001–3000. To avoid using the first test value as a training target, the final training input still drives the system but is excluded from readout fitting. Thus, the 2,000-step training segment and 200-step washout leave **1,799 supervised training samples**. Real inputs continue to drive the system during testing, so this is teacher-forced prediction.
 
-对照包括无热、固定热、即时热、不同 \(\tau\) 的输入驱动热状态、噪声开关和 persistence。静态光学映射也可能预测自相关时间序列，因此请结合下节的独立随机输入延迟重建解释。
+Controls include no heating, fixed heat, instantaneous heat, input-driven thermal states with different \(\tau\), noise settings, and persistence. A static optical mapping can also predict an autocorrelated time series, so interpret these results alongside delayed reconstruction of independent random inputs below.
 
-`previous noise` 对应前一版较小噪声，`strong noise` 对应本版较大噪声。两者的 pupil 静态像差也不同，因此整体差异不能全部归因于时间随机噪声。
+`previous noise` refers to the earlier lower-noise setting, and `strong noise` to the higher-noise setting. Their static pupil aberrations also differ, so the overall difference cannot be attributed solely to time-varying random noise.
 
-每个条件的 \(W_{\rm out}\) 与 ESN 的线性读出一样用 ridge 回归求解：
+For every condition, \(W_{\rm out}\) is fitted by ridge regression, as in an ESN linear readout:
 \[
 W_{\rm out}=(Z^TZ+\lambda P)^{-1}Z^TY,
 \quad Z_k=[1,\widetilde r_k^T],\quad P=\operatorname{diag}(0,1,\ldots,1).
 \]
-特征均值和方差只由训练数据拟合，bias 不做正则化；代码通过求解线性方程而非显式求逆来计算权重。
+Feature means and variances are fitted only on the training data, and the bias is not regularized. The code solves a linear system rather than explicitly computing a matrix inverse.
 ''')
 code('''
 series = np.loadtxt(Path('MackeyGlass_t17.txt')).reshape(-1)
@@ -246,9 +246,9 @@ fig, ax = plt.subplots(figsize=(5, 4)); im=ax.imshow(weights, cmap='coolwarm')
 ax.set_title('W_out on standardized speckle features'); fig.colorbar(im, ax=ax); plt.show()
 ''')
 md(r'''
-## 7. 独立随机输入的历史重建
+## 7. Reconstructing independent random-input history
 
-产生 3,000 个 i.i.d. 输入，仅根据当前 \(r_k\) 重建 \(u_{k-d}\)：前 2,000 步为训练段（前 200 步 washout），后 1,000 步测试。这比 Mackey–Glass 一步预测更直接检验过去输入能否从 speckle 读出。负的测试 \(R^2\) 表示比测试均值基线更差。不同 \(\tau\) 保持热稳态增益相同。实验包含相机噪声，应进一步更换多个随机种子和参数确认稳健性。
+Generate 3,000 i.i.d. inputs and reconstruct \(u_{k-d}\) using only the current \(r_k\). The first 2,000 steps form the training segment, including 200 washout steps; the last 1,000 steps are for testing. This tests the readout of past inputs from speckle more directly than one-step Mackey–Glass prediction. A negative test \(R^2\) is worse than the test-mean baseline. The steady-state thermal gain is held fixed across \(\tau\). The experiment includes camera noise; test additional random seeds and parameters to assess robustness.
 ''')
 code('''
 random_u = np.random.default_rng(2026).random(3000)
@@ -272,9 +272,9 @@ ax.axhline(0, color='0.5', lw=.8); ax.set(xlabel='delay d', ylabel='held-out R²
 ax.legend(fontsize=7); ax.grid(alpha=.2); plt.show()
 ''')
 md(r'''
-## 8. 非线性是否可读出？
+## 8. Is the nonlinearity observable by the readout?
 
-使用独立随机输入 \(x_k=2u_k-1\)，测试二阶 \(P_2(x)=(3x^2-1)/2\) 与当前/过去乘积。前 2,000 步为训练段（含 200 步 washout），后 1,000 步测试；训练段内部划分验证集。分别比较无热、不同 \(\tau\) 的热记忆，以及固定 probe、仅加热序列变化的条件。固定 probe 帮助区分 SLM 当前输入编码和“热相位→干涉→CCD”的非线性。每个任务只用验证段选择 ridge，报告未参与拟合的测试 \(R^2\)。
+Use independent random inputs \(x_k=2u_k-1\) to test the second-order function \(P_2(x)=(3x^2-1)/2\) and the product of current and past inputs. The first 2,000 steps form the training segment, including 200 washout steps; the last 1,000 are for testing, with a validation split inside training. Compare no heating, thermal memory at different \(\tau\), and a fixed probe with only the heating sequence changing. The fixed probe helps separate the current-input SLM encoding from the nonlinearity of thermal phase, interference and CCD detection. For each task, select the ridge parameter on validation data only and report test \(R^2\).
 ''')
 code('''
 nl_u = np.random.default_rng(213).random(3000)
@@ -304,12 +304,12 @@ for label, mode, tau, fixed_probe in nl_cases:
     print(f'{label:<22}' + ''.join(f'{v:>21.3f}' for v in result))
 ''')
 md(r'''
-## 9. 结果的边界
+## 9. Limitations
 
-1. 这个版本的递推变量只有 \(\theta\)；没有 previous speckle、电子 leak 或输出到 SLM 的反馈。
-2. 固定随机传播中插入局部相位屏，是 \(\Delta T\rightarrow\Delta n\rightarrow\Delta\phi\rightarrow T\) 的简化有效模型；\(\phi_{\max}\) 和输入热耦合尚未按材料、波长和厚度标定。
-3. 假设单一空间高斯形状和单一弛豫时间；扩展为多个空间区域、时间常数或热扩散方程需要另行建模。
-4. 图与指标只展示一组器件和随机种子，不能单凭一次仿真推断实验性能。
+1. The only recurrent variable in this version is \(\theta\); there is no previous-speckle feedback, electronic leak or output-to-SLM feedback.
+2. A thermal phase screen inserted into fixed random propagation is a simplified effective model of \(\Delta T\rightarrow\Delta n\rightarrow\Delta\phi\rightarrow T\). Neither \(\phi_{\max}\) nor the input-to-heating coupling has been calibrated to a material, wavelength or thickness.
+3. The model assumes one spatial Gaussian profile and one relaxation time. Multiple spatial regions, time constants or a heat-diffusion equation require additional modeling.
+4. The figures and metrics show one device realization and random seed; a single simulation cannot establish experimental performance.
 ''')
 
 notebook = {'cells': cells, 'metadata': {'kernelspec': {'display_name':'Python 3','language':'python','name':'python3'}, 'language_info': {'name':'python','version':'3'}}, 'nbformat':4, 'nbformat_minor':4}
