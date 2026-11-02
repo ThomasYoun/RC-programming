@@ -231,12 +231,14 @@ print(f"{'Persistence':<25} NRMSE={nrmse(y[test], u[test]):.4f}")
 print('W_out shape (bias + camera features):', readouts['Thermal τ=8, strong noise'].weights_.shape)
 ''')
 code('''
-fig, axes = plt.subplots(4, 1, figsize=(12, 9), sharex=True, constrained_layout=True)
+fig, axes = plt.subplots(4, 1, figsize=(15, 9), sharex=True, constrained_layout=True)
+test_steps = np.arange(len(test))
 for ax, label in zip(axes, ['No heat, strong noise', 'Static heat, strong noise', 'Thermal τ=2, strong noise', 'Thermal τ=8, strong noise']):
-    ax.plot(y[test][:200], color='black', lw=1.2, label='target')
-    ax.plot(predictions[label][:200], lw=1, label=label)
+    ax.plot(test_steps, y[test], color='black', lw=1.0, label='target')
+    ax.plot(test_steps, predictions[label], lw=0.9, label=label)
     ax.set_title(f'{label}: NRMSE={nrmse(y[test], predictions[label]):.4f}', fontsize=9)
     ax.legend(fontsize=8)
+axes[-1].set_xlim(0, len(test))
 axes[-1].set_xlabel('test time step'); plt.show()
 
 weights = readouts['Thermal τ=8, strong noise'].weights_[1:].reshape(common['camera_shape'])
