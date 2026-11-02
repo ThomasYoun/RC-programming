@@ -3,13 +3,14 @@ import base64
 import contextlib
 import io
 import json
+import sys
 from pathlib import Path
 
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-path = Path('thermal_free_decay_comparison.ipynb')
+path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path('thermal_free_decay_comparison.ipynb')
 notebook = json.loads(path.read_text(encoding='utf-8'))
 namespace = {'__name__': '__main__'}
 count = 0
