@@ -4,7 +4,8 @@ import unittest
 
 import numpy as np
 
-from phase_only_optics import PhaseOnlyOptics, phase_trace, radial_profile, wrap_phase
+from phase_only_optics import (PhaseOnlyOptics, phase_map_trace, phase_trace,
+                               radial_profile, wrap_phase)
 
 
 class PhaseModelTests(unittest.TestCase):
@@ -48,6 +49,59 @@ class PhaseModelTests(unittest.TestCase):
         wrapped = wrap_phase(unwrapped)
         self.assertTrue(np.all((wrapped >= 0) & (wrapped < 2 * np.pi)))
         np.testing.assert_allclose(np.exp(1j * unwrapped), np.exp(1j * wrapped), atol=1e-14)
+
+
+class PhaseMapTraceTests(unittest.TestCase):
+    def setUp(self):
+        # Includes both signs and values > 2π to check unwrapped evolution.
+        self.initial = np.array([[8.0, 0.5], [-1.0, 3.0]])
+        self.profile = np.array([[1.0, 0.5], [0.25, 0.0]])
+        self.increments = np.array([2.0, 0.0, 1.0, 0.0, 0.0])
+        self.tau, self.dt = 4.0, 0.5
+        self.a = np.exp(-self.dt / self.tau)
+
+    def test_prewrite_timing_and_phase_decomposition(self):
+        total, baseline, driven = phase_map_trace(
+            self.initial, self.increments, self.profile, self.tau, self.dt)
+        self.assertEqual(total.shape, (len(self.increments), *self.initial.shape))
+        np.testing.assert_allclose(baseline[0], self.initial)
+        np.testing.assert_allclose(driven[0], 0.0)
+        np.testing.assert_allclose(total, baseline + driven)
+        np.testing.assert_allclose(baseline[1:], self.a * baseline[:-1])
+        np.testing.assert_allclose(
+            driven[1:], self.a * driven[:-1]
+            + self.increments[:-1, None, None] * self.profile)
+        np.testing.assert_allclose(
+            total[1:], self.a * total[:-1]
+            + self.increments[:-1, None, None] * self.profile)
+
+    def test_no_write_leaves_exponentially_decaying_random_pattern(self):
+        total, baseline, driven = phase_map_trace(
+            self.initial, np.zeros(5), self.profile, self.tau, self.dt)
+        expected = self.a ** np.arange(5)[:, None, None] * self.initial
+        np.testing.assert_allclose(baseline, expected)
+        np.testing.assert_allclose(total, expected)
+        np.testing.assert_allclose(driven, 0.0)
+        self.assertGreater(total[1, 0, 0], 2 * np.pi)
+
+    def test_last_write_does_not_affect_existing_observations(self):
+        changed = self.increments.copy()
+        changed[-1] = 123.0
+        reference = phase_map_trace(self.initial, self.increments, self.profile, self.tau, self.dt)
+        actual = phase_map_trace(self.initial, changed, self.profile, self.tau, self.dt)
+        for first, second in zip(reference, actual):
+            np.testing.assert_allclose(first, second)
+
+    def test_driven_phase_scales_with_input_and_is_zero_outside_profile(self):
+        zeros = np.zeros_like(self.initial)
+        total, baseline, driven = phase_map_trace(
+            zeros, self.increments, self.profile, self.tau, self.dt)
+        np.testing.assert_allclose(baseline, 0.0)
+        np.testing.assert_allclose(total, driven)
+        np.testing.assert_allclose(driven[:, 1, 1], 0.0)
+        np.testing.assert_allclose(driven[1], self.increments[0] * self.profile)
+        np.testing.assert_allclose(driven[3], (self.a**2*self.increments[0]
+                                               + self.increments[2]) * self.profile)
 
 
 class PhaseOpticsTests(unittest.TestCase):
