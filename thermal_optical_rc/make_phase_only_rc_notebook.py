@@ -20,7 +20,7 @@ Run this notebook from the `thermal_optical_rc` directory, with `phase_only_rc.p
 md(r'''
 ## 1. Causal optical model and comparisons
 
-At time \(k\), input \(u_k\) writes to an **unwrapped** phase map and the resulting speckle is observed:
+At time \(k\), input \(u_k\in[0,1]\) writes to an **unwrapped** phase map and the resulting speckle is observed:
 \[
 \Phi_{k+1}=a\Phi_k+\beta u_k G,\quad a=e^{-1/\tau},\qquad
 r_{k+1}=\operatorname{downsample}\left|O_2 B\operatorname{diag}(e^{i\Phi_{k+1}})A O_1E_{\rm SLM}\right|^2.
@@ -28,10 +28,12 @@ r_{k+1}=\operatorname{downsample}\left|O_2 B\operatorname{diag}(e^{i\Phi_{k+1}})
 For clarity, array `features[k]` stores \(r_{k+1}\), the image **after** writing \(u_k\). Its one-step prediction target is \(u_{k+1}\). This is the same causal update as the phase-verification notebook, shifted to index each camera frame by its most recent written input. We compare:
 
 * **Static:** the same initial random phase is frozen and independent of input.
-* **Instant:** \(\Phi_{k+1}=g u_kG\); no retained input history.
-* **Fading:** the displayed values of \(\tau\), with \(\beta=(1-a)g\). This holds the constant-input steady-state gain \(g\) fixed across \(\tau\); it is different from the fixed \(\beta=0.6\pi\) example in the phase verification notebook.
+* **Instant:** \(\Phi_{k+1}=2\pi u_kG\); no retained input history.
+* **Fading:** the displayed values of \(\tau\), with **fixed \(\beta=2\pi\)** so that an input in \([0,1]\) writes an increment in \([0,2\pi]\) radians at the peak of \(G\). At any pixel the increment is \(2\pi u_kG(x,y)\).
 
-All conditions use the same initial unwrapped random map, scattering realization, SLM probe and radial \(G\) (80% support). Instant mode deliberately overwrites the initial phase on its first write. The random initial map is sampled from \(U[0,2\pi)\), treated as an unwrapped physical state, and decays in the fading cases. Camera shot and read noise are applied before downsampling; the ideal condition omits both. Pupil aberrations and SLM jitter are not included in this phase-only benchmark. All values are model assumptions, not calibrated parameters.
+All conditions use the same initial unwrapped random map, scattering realization, SLM probe and radial \(G\) (80% support). Instant mode deliberately overwrites the initial phase on its first write. The random initial map is sampled from \(U[0,6\pi)\), treated as an unwrapped state, and decays in the fading cases. The \(6\pi\) upper limit is adjustable. Camera shot and read noise are applied before downsampling; the ideal condition omits both. Pupil aberrations and SLM jitter are not included. All values are model assumptions, not calibrated parameters.
+
+With the same per-step \(\beta\), changing \(\tau\) also changes the steady-state response: the peak driven phase at constant input is \(\beta u/(1-a)\). Thus these comparisons change both memory duration and steady-state phase magnitude; they do not isolate \(\tau\) alone. Unwrapped phase is never capped at \(2\pi\), even though optical phase is periodic.
 
 Only \(W_{\rm out}\) is trained by ridge regression. The camera features are standardized using the fit segment only; the bias is unregularized. Despite many CCD pixels, the long-term phase dynamics have only **one driven scalar memory** because the spatial write profile is fixed.
 ''')
@@ -48,9 +50,10 @@ torch.set_num_threads(1)
 plt.rcParams['figure.dpi'] = 100
 shape, camera_shape = (128, 128), (16, 16)
 G = radial_profile(shape, core_radius=0.12, support_fraction=0.8)
-initial = np.random.default_rng(2026).uniform(0, 2*np.pi, shape)
+initial_phase_max = 6*np.pi  # adjustable upper limit of the unwrapped initial state
+initial = np.random.default_rng(2026).uniform(0, initial_phase_max, shape)
 optics = PhaseOnlyOptics(seed=42, optical_shape=shape, pupil_radius=(0.25, 0.25))
-phase_gain = 2*np.pi
+phase_increment_max = 2*np.pi  # u ∈ [0,1] maps to a peak write of 0–2π rad
 cases = [('Static, noisy', 'static', 8, True),
          ('Instant, noisy', 'instant', 8, True),
          ('Fading τ=2, noisy', 'memory', 2, True),
@@ -59,7 +62,7 @@ cases = [('Static, noisy', 'static', 8, True),
          ('Fading τ=8, ideal', 'memory', 8, False)]
 def features_for(inputs, case):
     label, mode, tau, noisy = case
-    beta = (1-np.exp(-1/tau))*phase_gain if mode == 'memory' else phase_gain
+    beta = phase_increment_max
     features, _ = simulate_phase_rc(inputs, optics, G, initial, tau, beta, mode=mode,
         camera_shape=camera_shape, photon_scale=5000 if noisy else None,
         read_noise_electrons=3.0 if noisy else 0, noise_seed=123)
@@ -71,7 +74,8 @@ def fit_validated(features, target, fit_idx, valid_idx, refit_idx):
     best = alphas[int(np.argmax(validation))]
     return RidgeReadout(best).fit(features[refit_idx], target[refit_idx]), best
 
-print(f'Phase support: {np.count_nonzero(G)/G.size:.2%}; fixed-input gain: {phase_gain/np.pi:.2f}π rad')
+print(f'Phase support: {np.count_nonzero(G)/G.size:.2%}; max increment: {phase_increment_max/np.pi:.2f}π rad')
+print(f'Initial unwrapped phase range: [0, {initial_phase_max/np.pi:g}π) rad')
 print(f'CCD features: {np.prod(camera_shape)}; objective pupils and scattering fixed')
 ''')
 md(r'''
