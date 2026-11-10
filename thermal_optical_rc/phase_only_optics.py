@@ -59,6 +59,35 @@ def phase_trace(n_steps, tau, dt=1.0, initial_phase=0.0, increments=None):
     return phase, next_phase
 
 
+def phase_map_trace(initial_map, increments, profile, tau, dt=1.0):
+    """Evolve an unwrapped phase map with a decaying initial distribution.
+
+    Returns observed total, initial-decay, and driven phase maps at k=0,...,N-1.
+    After observation k the update is phi[k+1]=a*phi[k]+increments[k]*profile.
+    Thus the final write is not observed unless one additional step is supplied.
+    """
+    initial = np.asarray(initial_map, dtype=float)
+    drive_profile = np.asarray(profile, dtype=float)
+    inc = np.asarray(increments, dtype=float)
+    if initial.ndim != 2 or not initial.size or drive_profile.shape != initial.shape:
+        raise ValueError('initial_map and profile must have the same nonempty 2-D shape')
+    if inc.ndim != 1 or not inc.size:
+        raise ValueError('increments must be a nonempty one-dimensional sequence')
+    if not (np.isfinite(initial).all() and np.isfinite(drive_profile).all() and np.isfinite(inc).all()):
+        raise ValueError('phase maps and increments must be finite')
+    if not np.isfinite(tau) or not np.isfinite(dt) or tau <= 0 or dt <= 0:
+        raise ValueError('tau and dt must be finite and positive')
+    a = np.exp(-dt/tau)
+    initial_decay = np.empty((len(inc), *initial.shape), dtype=float)
+    driven = np.empty_like(initial_decay)
+    remaining, memory = initial.copy(), np.zeros_like(initial)
+    for k, increment in enumerate(inc):
+        initial_decay[k], driven[k] = remaining, memory
+        remaining = a*remaining
+        memory = a*memory + increment*drive_profile
+    return initial_decay + driven, initial_decay, driven
+
+
 def wrap_phase(phase):
     """Wrap for presentation; never use the wrapped value in state decay."""
     return np.mod(phase, 2*np.pi)
