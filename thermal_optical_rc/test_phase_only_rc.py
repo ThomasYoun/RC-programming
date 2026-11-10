@@ -75,6 +75,37 @@ class PhaseRCCausalityTests(unittest.TestCase):
         expected = np.exp(-0.5)*self.initial + 0.5*profile
         np.testing.assert_allclose(self.optics.received_phases[0], expected, atol=1e-6)
 
+    def test_full_range_input_maps_to_zero_pi_and_two_pi_increments(self):
+        # Instant mode exposes the written increment with no retained history.
+        profile = np.full((4, 4), 0.5)
+        profile[1, 1] = 1.0
+        inputs = np.array([0.0, 0.5, 1.0])
+        features, phase_at_peak = simulate_phase_rc(
+            inputs, self.optics, profile, self.initial, tau=2,
+            beta=2*np.pi, mode='instant', camera_shape=(2, 2))
+        np.testing.assert_allclose(phase_at_peak, [0.0, np.pi, 2*np.pi], atol=1e-12)
+        for idx, value in enumerate(inputs):
+            np.testing.assert_allclose(self.optics.received_phases[idx],
+                                       2*np.pi*value*profile, atol=1e-12)
+        self.assertEqual(features.shape, (3, 4))
+
+    def test_repeated_writes_decay_unwrapped_phase_above_two_pi(self):
+        initial = np.full((4, 4), 4*np.pi)
+        inputs = np.array([0.5, 1.0, 0.0, 1.0])
+        tau, beta = 2.0, 2*np.pi
+        _, observed = simulate_phase_rc(inputs, self.optics, self.profile,
+            initial, tau=tau, beta=beta, mode='memory', camera_shape=(2, 2))
+        decay = np.exp(-1/tau)
+        phase = 4*np.pi
+        expected = []
+        for value in inputs:
+            phase = decay*phase + beta*value
+            expected.append(phase)
+        np.testing.assert_allclose(observed, expected, atol=1e-12)
+        self.assertTrue(np.all(observed > 2*np.pi))
+        for idx, value in enumerate(expected):
+            np.testing.assert_allclose(self.optics.received_phases[idx], value, atol=1e-12)
+
     def test_camera_noise_is_seeded_and_does_not_change_phase_state(self):
         kwargs = dict(tau=2, beta=0.5, mode='memory', camera_shape=(2, 2),
                       photon_scale=10, read_noise_electrons=1)
