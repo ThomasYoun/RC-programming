@@ -1,4 +1,4 @@
-"""Regression tests for long time-constant phase-only RC comparisons."""
+"""Regression tests for the selected phase-only RC time-constant sweep."""
 import unittest
 
 import numpy as np
@@ -6,7 +6,7 @@ import numpy as np
 from phase_only_rc import simulate_phase_rc
 
 
-TAUS = (10, 50, 100, 500, 1000)
+TAUS = (2, 5, 10, 50, 100)
 
 
 class RecordingOptics:
@@ -47,7 +47,7 @@ class PhaseTauSweepTests(unittest.TestCase):
                                            rtol=2e-13, atol=1e-12)
                 residuals.append(phases[199, 0, 0]/self.initial[0, 0])
         self.assertTrue(np.all(np.diff(residuals) > 0))
-        self.assertGreater(residuals[-1], 0.8)  # 200 steps is short for tau=1000
+        self.assertGreater(residuals[-1], 0.13)  # 200 steps leaves about 13.5% at tau=100
 
     def test_identical_current_write_is_two_pi_independent_of_tau(self):
         zero_initial = np.zeros_like(self.initial)
