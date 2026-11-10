@@ -33,7 +33,7 @@ For clarity, array `features[k]` stores \(r_{k+1}\), the image **after** writing
 
 All conditions use the same initial unwrapped random map, scattering realization, SLM probe and radial \(G\) (80% support). Instant mode deliberately overwrites the initial phase on its first write. The random initial map is sampled from \(U[0,6\pi)\), treated as an unwrapped state, and decays in the fading cases. The \(6\pi\) upper limit is adjustable. Camera shot and read noise are applied before downsampling; the ideal condition omits both. Pupil aberrations and SLM jitter are not included. All values are model assumptions, not calibrated parameters.
 
-With the same per-step \(\beta\), changing \(\tau\) also changes the steady-state response: the peak driven phase at constant input is \(\beta u/(1-a)\). Thus these comparisons change both memory duration and steady-state phase magnitude; they do not isolate \(\tau\) alone. Unwrapped phase is never capped at \(2\pi\), even though optical phase is periodic.
+With the same per-step \(\beta\), changing \(\tau\) also changes the steady-state response: the peak driven phase at constant input is \(\beta u/(1-a)\). Thus these comparisons change both memory duration and steady-state phase magnitude; they do not isolate \(\tau\) alone. Unwrapped phase is never capped at \(2\pi\), even though optical phase is periodic. The requested long time constants are compared with the earlier \(\tau=2,8,32\) and with the same 200-step washout. This washout is intentionally held fixed for comparison, **not** assumed sufficient for long \(\tau\).
 
 Only \(W_{\rm out}\) is trained by ridge regression. The camera features are standardized using the fit segment only; the bias is unregularized. Despite many CCD pixels, the long-term phase dynamics have only **one driven scalar memory** because the spatial write profile is fixed.
 ''')
@@ -59,14 +59,19 @@ cases = [('Static, noisy', 'static', 8, True),
          ('Fading τ=2, noisy', 'memory', 2, True),
          ('Fading τ=8, noisy', 'memory', 8, True),
          ('Fading τ=32, noisy', 'memory', 32, True),
+         ('Fading τ=10, noisy', 'memory', 10, True),
+         ('Fading τ=50, noisy', 'memory', 50, True),
+         ('Fading τ=100, noisy', 'memory', 100, True),
+         ('Fading τ=500, noisy', 'memory', 500, True),
+         ('Fading τ=1000, noisy', 'memory', 1000, True),
          ('Fading τ=8, ideal', 'memory', 8, False)]
-def features_for(inputs, case):
+def features_for(inputs, case, return_phase=False):
     label, mode, tau, noisy = case
     beta = phase_increment_max
-    features, _ = simulate_phase_rc(inputs, optics, G, initial, tau, beta, mode=mode,
+    features, phase = simulate_phase_rc(inputs, optics, G, initial, tau, beta, mode=mode,
         camera_shape=camera_shape, photon_scale=5000 if noisy else None,
         read_noise_electrons=3.0 if noisy else 0, noise_seed=123)
-    return features
+    return (features, phase) if return_phase else features
 
 def fit_validated(features, target, fit_idx, valid_idx, refit_idx):
     alphas = [0.1, 1.0, 10.0, 100.0, 1000.0]
@@ -77,6 +82,19 @@ def fit_validated(features, target, fit_idx, valid_idx, refit_idx):
 print(f'Phase support: {np.count_nonzero(G)/G.size:.2%}; max increment: {phase_increment_max/np.pi:.2f}π rad')
 print(f'Initial unwrapped phase range: [0, {initial_phase_max/np.pi:g}π) rad')
 print(f'CCD features: {np.prod(camera_shape)}; objective pupils and scattering fixed')
+''')
+md(r'''
+### Initial-state persistence and phase build-up
+
+After \(n\) writes, the initial phase component is multiplied by \(e^{-n/\tau}\). This is distinct from the phase accumulated from inputs. The table reports the residual after the 200-step washout and at the test boundary, plus the approximate number of steps required to reduce it below 1%. For \(\tau=500\) and \(1000\), achieving that threshold would require more steps than the entire 2,000-step training segment. We retain the requested split; later plots expose phase drift rather than silently changing the protocol.
+''')
+code('''
+tau_values = [10, 50, 100, 500, 1000]
+print(f"{'τ':>6}{'after 200':>15}{'after 2000':>15}{'steps to <1%':>17}{'steady peak/π at u=1':>26}")
+for tau in tau_values:
+    # Strict inequality: n must exceed tau*log(100), even if it is an integer.
+    steps_1pct = int(np.floor(tau*np.log(100)))+1
+    print(f'{tau:>6}{np.exp(-200/tau):>15.3%}{np.exp(-2000/tau):>15.3%}{steps_1pct:>17}{(2/(1-np.exp(-1/tau))):>26.1f}')
 ''')
 md(r'''
 ## 2. Mackey–Glass one-step prediction
@@ -98,10 +116,10 @@ print(f"Train segment=2000, washout=200, refit={len(splits['refit'])}, validatio
 print(f'Test relative steps: 0–{len(te)-1}; target indices: {te[0]+1}–{te[-1]+1}')
 print(f'Test input clipping fraction: {np.mean(u[te] != raw[te]):.4f}')
 print(f'Persistence baseline NRMSE: {nrmse(target[te], u[te]):.4f}')
-mg_predictions, mg_scores = {}, {}
+mg_predictions, mg_scores, mg_phases = {}, {}, {}
 for case in cases:
     label = case[0]
-    X = features_for(u, case)
+    X, mg_phases[label] = features_for(u, case, return_phase=True)
     model, alpha = fit_validated(X, target, splits['fit'], splits['valid'], splits['refit'])
     pred = model.predict(X[te])
     mg_predictions[label] = pred
@@ -109,7 +127,8 @@ for case in cases:
     print(f'{label:<22} NRMSE={mg_scores[label][0]:.4f}  R²={mg_scores[label][1]: .4f}  ridge={alpha:g}')
 ''')
 code('''
-fig, axes = plt.subplots(3, 2, figsize=(14, 9), sharex=True, constrained_layout=True)
+nrows = (len(cases)+1)//2
+fig, axes = plt.subplots(nrows, 2, figsize=(14, 2.8*nrows), sharex=True, constrained_layout=True, squeeze=False)
 for ax, case in zip(axes.flat, cases):
     label = case[0]
     ax.plot(np.arange(len(te)), target[te], color='black', lw=.9, label='target')
@@ -117,16 +136,27 @@ for ax, case in zip(axes.flat, cases):
     ax.set_title(f'{label}: NRMSE={mg_scores[label][0]:.3f}', fontsize=9)
     ax.set_xlim(0, 1000); ax.grid(alpha=.15); ax.legend(fontsize=7)
 for ax in axes[-1]: ax.set_xlabel('test time step (0–1000)')
+for ax in list(axes.flat)[len(cases):]: ax.set_visible(False)
 plt.show()
+
+fig, ax = plt.subplots(figsize=(10, 4), constrained_layout=True)
+for tau in tau_values:
+    label = f'Fading τ={tau}, noisy'
+    ax.plot(np.arange(len(u)), mg_phases[label]/np.pi, label=f'τ={tau}')
+for boundary, label in [(200, 'washout ends'), (1600, 'validation starts'), (2000, 'test starts')]:
+    ax.axvline(boundary, color='gray', ls='--', lw=.8)
+    ax.text(boundary, .98, label, rotation=90, va='top', ha='right', transform=ax.get_xaxis_transform(), fontsize=8)
+ax.set(xlabel='input step k', ylabel='unwrapped phase at profile peak / π', title='Phase trajectory: initial decay plus input-driven accumulation')
+ax.grid(alpha=.2); ax.legend(ncol=3); plt.show()
 ''')
 md(r'''
 ## 3. Independent-input delay reconstruction
 
-With independent uniform inputs, a memoryless current-input mapping cannot systematically reconstruct an earlier input. At frame `features[k]`, reconstruct \(u_{k-d}\) for \(d=0,1,2,4,8,16\). Here \(d=0\) is the input just written; \(d\ge1\) probes past inputs retained by the physical phase dynamics. A different ridge strength is selected per condition and delay, on training-segment validation only. The first 200 samples are washout, and evaluation uses the last 1,000 samples. Positive held-out \(R^2\) indicates performance beyond the retrospective test-mean baseline; negative values are possible. These sparse scores are not a total memory-capacity estimate.
+With independent uniform inputs, a memoryless current-input mapping cannot systematically reconstruct an earlier input. At frame `features[k]`, reconstruct \(u_{k-d}\) for delays up to 500 steps. Here \(d=0\) is the input just written; \(d\ge1\) probes past inputs retained by the physical phase dynamics. For \(d>200\), fitting begins at index \(d\) so every training target exists; all other splits remain fixed. Thus the longest delays have fewer training examples. A different ridge strength is selected per condition and delay, on training-segment validation only. The first 200 samples are washout, and evaluation uses the last 1,000 samples. Positive held-out \(R^2\) indicates performance beyond the retrospective test-mean baseline; negative values are possible. These sparse scores are not a total memory-capacity estimate.
 ''')
 code('''
 random_u = np.random.default_rng(213).uniform(0, 1, 3000)
-delay_values = [0, 1, 2, 4, 8, 16]
+delay_values = [0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 500]
 fit = np.arange(200, 1600); valid = np.arange(1600, 2000)
 refit = np.arange(200, 2000); test = np.arange(2000, 3000)
 memory_scores, nonlinear_scores = {}, {}
@@ -142,7 +172,9 @@ for case in cases:
     for d in delay_values:
         history_target = np.zeros_like(random_u)
         history_target[d:] = random_u[:len(random_u)-d] if d else random_u
-        model, alpha = fit_validated(X, history_target, fit, valid, refit)
+        fit_d = np.arange(max(200, d), 1600)
+        refit_d = np.arange(max(200, d), 2000)
+        model, alpha = fit_validated(X, history_target, fit_d, valid, refit_d)
         scores.append(r2_score(history_target[test], model.predict(X[test])))
     memory_scores[case[0]] = scores
     nonlinear_scores[case[0]] = []
@@ -152,7 +184,8 @@ for case in cases:
     print(f'{case[0]:<22}' + ''.join(f'{v:>9.3f}' for v in scores))
 fig, ax = plt.subplots(figsize=(9, 4), constrained_layout=True)
 for label, scores in memory_scores.items(): ax.plot(delay_values, scores, 'o-', label=label)
-ax.axhline(0, color='gray', lw=.8); ax.set(xlabel='input delay d', ylabel='held-out R²')
+ax.axhline(0, color='gray', lw=.8); ax.set(xlabel='input delay d (symlog scale)', ylabel='held-out R²')
+ax.set_xscale('symlog', linthresh=1)
 ax.grid(alpha=.25); ax.legend(fontsize=8, ncol=2); plt.show()
 ''')
 md(r'''
@@ -168,7 +201,7 @@ for label, scores in nonlinear_scores.items():
 md(r'''
 ## 5. Interpretation and limitations
 
-The random initial phase is a transient, not input-driven long-term memory; after washout, the remaining driven state is essentially the scalar coefficient of \(G\). A high Mackey–Glass score alone does not establish useful fading memory: compare with instant, persistence, and the independent-input task. Phase periodicity can make different unwrapped states optically indistinguishable; camera noise and ridge regularization further limit recoverability. \(G\), \(\tau\), gain, camera noise, and random seeds here are illustrative. Test multiple independent optical realizations, initial maps, input/noise seeds and parameters before claiming robustness. No temperature dynamics or experimentally calibrated index changes are represented.
+The random initial phase is a transient, not input-driven long-term memory. With long \(\tau\), the original phase can remain substantial after the fixed 200-step washout and even into the test segment. The input-driven part still has only one dynamical scalar coefficient of \(G\). A high Mackey–Glass score alone does not establish useful fading memory: compare with instant, persistence, and the independent-input task. Phase periodicity, large fixed-increment accumulation, nonstationary initial transients, camera noise and ridge regularization all affect recoverability. \(G\), \(\tau\), gain, camera noise, and random seeds here are illustrative. Test multiple independent optical realizations, initial maps, input/noise seeds and parameters before claiming robustness. No temperature dynamics or experimentally calibrated index changes are represented.
 ''')
 
 notebook = {'cells': cells, 'metadata': {'kernelspec': {'display_name': 'Python 3', 'language': 'python', 'name': 'python3'}, 'language_info': {'name': 'python', 'version': '3'}}, 'nbformat': 4, 'nbformat_minor': 4}
