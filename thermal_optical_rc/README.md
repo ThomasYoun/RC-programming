@@ -22,6 +22,8 @@ Installing PyTorch may involve downloading large packages. The original example 
 
 - `phase_only_verification.ipynb`: an initially random, fading phase map plus input-driven phase increments with an assumed regularized inverse-radius profile; 2π-wrapping checks and fixed-scattering speckle comparisons are included. This is an effective phase-only experiment, not a calibrated temperature or refractive-index model.
 - `phase_only_optics.py`, `make_phase_only_notebook.py`, and `test_phase_only.py`: phase-only model, notebook generator, and unit tests. Run the tests from this directory with `python -m unittest -v test_phase_only`.
+- `phase_only_rc_tests.ipynb`: Mackey–Glass one-step prediction, independent-input delay reconstruction and nonlinear tasks for the input-driven phase-only model, including instant, static, persistence, noisy, and ideal controls. The fixed SLM probe does not encode the input directly. The first 2,000 input steps include 200 washout steps; the remaining 1,000 are the test segment.
+- `phase_only_rc.py`, `make_phase_only_rc_notebook.py`, and `test_phase_only_rc.py`: streaming RC simulation, notebook generator, and tests. Run `python -m unittest -v test_phase_only_rc`.
 - `optical_physical_memory_rc.ipynb`: the main notebook, covering purely physical thermal memory, full-SLM input, objective pupils, noise, and multiple RC comparisons. The GitHub version does not contain saved execution outputs.
 - `optical_physical_memory.py`: optical propagation without electronic feedback, an explicit thermal state, configurable noise, and ridge readout.
 - `make_physical_memory_notebook.py`: optional script that generates the notebook above and overwrites the notebook of the same name.
