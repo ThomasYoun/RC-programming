@@ -20,7 +20,7 @@ Installing PyTorch may involve downloading large packages. The original example 
 
 ## File descriptions
 
-- `phase_only_verification.ipynb`: direct phase-memory and 2π-wrapping checks, an assumed regularized inverse-radius phase profile, and the corresponding fixed-scattering speckle response. This is an effective phase-only experiment, not a calibrated temperature or refractive-index model.
+- `phase_only_verification.ipynb`: an initially random, fading phase map plus input-driven phase increments with an assumed regularized inverse-radius profile; 2π-wrapping checks and fixed-scattering speckle comparisons are included. This is an effective phase-only experiment, not a calibrated temperature or refractive-index model.
 - `phase_only_optics.py`, `make_phase_only_notebook.py`, and `test_phase_only.py`: phase-only model, notebook generator, and unit tests. Run the tests from this directory with `python -m unittest -v test_phase_only`.
 - `optical_physical_memory_rc.ipynb`: the main notebook, covering purely physical thermal memory, full-SLM input, objective pupils, noise, and multiple RC comparisons. The GitHub version does not contain saved execution outputs.
 - `optical_physical_memory.py`: optical propagation without electronic feedback, an explicit thermal state, configurable noise, and ridge readout.
