@@ -17,46 +17,61 @@ def code(text):
 md(r'''
 # Phase-only verification of a dynamic scattering medium
 
-This notebook starts directly from an imposed optical phase, without a temperature model, a calibrated refractive-index change, or electronic feedback. It checks how a prescribed phase memory and an assumed inverse-radius spatial profile affect a fixed coherent scattering system. It is **not yet a reservoir-computing benchmark** and does not by itself validate a physical thermo-optic material.
+This notebook starts directly from an initially random, fading optical phase map and an externally driven phase increment, without a temperature model, a calibrated refractive-index change, or electronic feedback. It checks how their sum affects a fixed coherent scattering system. It is **not yet a reservoir-computing benchmark** and does not by itself validate a physical thermo-optic material.
 
 Run with `phase_only_optics.py` and `optical_physical_memory.py` in the same directory. Requirements: NumPy, PyTorch, Matplotlib, and Jupyter.
 ''')
 md(r'''
 ## 1. Phase state and increments
 
-At observation step \(k\), the unwrapped amplitude is \(q_k\) in radians. The direct phase increment \(\delta q_k\) is applied **after** that observation:
+At observation step \(k\), the entire unwrapped phase map \(\Phi_k(x,y)\) is observed. The external signal \(u_k\) writes a direct increment \(\delta q_k=\beta u_k\) **after** the observation:
 \[
-q_{k+1}=e^{-\Delta t/\tau}q_k+\delta q_k,\qquad
-\phi_k(x,y)=q_kG(x,y).
+\Phi_{k+1}(x,y)=a\Phi_k(x,y)+\beta u_kG(x,y),\qquad a=e^{-\Delta t/\tau}.
 \]
 
-The first plot shows both the memory \(q_k\) and the injected increments. Time is in arbitrary steps; neither \(q\), the increments, nor \(\tau\) is calibrated to a material. \(q_k\) is kept unwrapped for the update. For visualization only, use \(\phi_{\rm wrapped}=\phi\bmod 2\pi\in[0,2\pi)\). The optical screen is \(D=e^{i\phi}\).
+Here \(\Phi_0(x,y)\) is sampled once, independently per pixel, from \(U[0,2\pi)\), interpreted as an **unwrapped initial perturbation relative to zero**. The corresponding wrapped phase alone would not determine its later decay: initial values differing by \(2\pi\) have the same optical phase initially but different later unwrapped states. This chosen distribution and exponential decay are assumptions, not a unique physical reconstruction.
+
+We separate \(\Phi_k=a^k\Phi_0+q_kG\), with \(q_0=0\) and \(q_{k+1}=aq_k+\beta u_k\). Both initial and driven components use the same \(\tau\) in this simple example. Time, \(\beta\), and \(\tau\) are uncalibrated. State evolution remains unwrapped; only displayed phases are reduced modulo \(2\pi\). The optical screen is \(D_k=e^{i\Phi_k}\).
 ''')
 code('''
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
 from phase_only_optics import (PhaseOnlyOptics, radial_profile, phase_trace,
-                               wrap_phase, intensity_correlation)
+                               phase_map_trace, wrap_phase, intensity_correlation)
 
 torch.set_num_threads(1)
 plt.rcParams['figure.dpi'] = 110
 n_steps, dt, tau = 80, 1.0, 12.0
-increments = np.zeros(n_steps)
-increments[0] = 1.4*np.pi
-increments[28] = 2.0*np.pi  # crosses 2π so local phase wrapping can be inspected
+shape = (128, 128)
+core_radius, support_fraction = 0.12, 0.8
+G = radial_profile(shape, core_radius=core_radius, support_fraction=support_fraction)
+initial_phase = np.random.default_rng(2026).uniform(0, 2*np.pi, size=shape)
+u = np.zeros(n_steps)
+rng = np.random.default_rng(7)
+u[4:25] = rng.uniform(0, 1, 21)
+u[35:55] = rng.uniform(0, 1, 20)
+beta = 0.6*np.pi  # phase increment in radians per unit input, not calibrated
+increments = beta*u
 q, q_next = phase_trace(n_steps, tau, dt, initial_phase=0, increments=increments)
+total_phase, initial_decay, driven_phase = phase_map_trace(initial_phase, increments, G, tau, dt)
 t = np.arange(n_steps)*dt
-fig, axes = plt.subplots(2, 1, figsize=(10, 5), sharex=True, constrained_layout=True)
-axes[0].plot(t, q/np.pi, label='unwrapped phase amplitude q[k]')
-axes[0].plot(t, wrap_phase(q)/np.pi, '--', label='q[k] modulo 2π (display)')
-axes[0].set(ylabel='phase / π', title='Direct phase memory: observe first, add increment afterwards')
-axes[0].legend(); axes[0].grid(alpha=.25)
+pixel = (shape[0]//2, shape[1]//2)
+fig, axes = plt.subplots(3, 1, figsize=(10, 7), sharex=True, constrained_layout=True)
+axes[0].step(t, u, where='post', label='external input u[k]')
+axes[0].set(ylabel='u[k]', title='External input writes phase after the current observation')
 axes[1].stem(t, increments/np.pi, basefmt=' ')
-axes[1].set(xlabel='time step k', ylabel='increment / π')
-axes[1].grid(alpha=.25); plt.show()
+axes[1].set(ylabel='increment / π')
+axes[2].plot(t, initial_decay[:, pixel[0], pixel[1]]/np.pi, label='decaying initial phase')
+axes[2].plot(t, driven_phase[:, pixel[0], pixel[1]]/np.pi, label='input-driven phase')
+axes[2].plot(t, total_phase[:, pixel[0], pixel[1]]/np.pi, label='total unwrapped phase')
+axes[2].plot(t, wrap_phase(total_phase[:, pixel[0], pixel[1]])/np.pi, '--', label='total modulo 2π')
+axes[2].set(xlabel='time step k', ylabel='phase / π', title='Example pixel near screen center')
+for ax in axes: ax.grid(alpha=.25)
+axes[0].legend(); axes[2].legend(ncol=2); plt.show()
 print(f'Decay factor per step: {np.exp(-dt/tau):.5f}')
-print(f'First increment at k=0 is visible in q[1]={q[1]/np.pi:.2f}π, not q[0]={q[0]:.1f}.')
+print(f'Initial phase range: {initial_phase.min():.4f} to {initial_phase.max():.4f} rad')
+print(f'First nonzero input at k=4: q[4]={q[4]:.3f}, q[5]={q[5]:.3f} rad')
 ''')
 md(r'''
 ## 2. An inverse-radius phase profile
@@ -68,9 +83,6 @@ G(r)\propto\frac{1}{\sqrt{r^2+r_c^2}},\qquad \max G=1.
 The finite core \(r_c\) avoids a singularity. We retain the previous approximate **80% screen support**; outside it \(G=0\). The hard support edge is a modeling choice, not a prediction of heat diffusion. Coordinates and core size are dimensionless. Here \(1/r\) describes an assumed **projected phase perturbation**, not the absolute refractive index or an optical scattering Green function. Deriving a projected phase from a three-dimensional \(\Delta n\) requires integrating along the actual light paths.
 ''')
 code('''
-shape = (128, 128)
-core_radius, support_fraction = 0.12, 0.8
-G = radial_profile(shape, core_radius=core_radius, support_fraction=support_fraction)
 coords = np.linspace(-1, 1, shape[1])
 fig, axes = plt.subplots(1, 2, figsize=(10, 4), constrained_layout=True)
 im = axes[0].imshow(G, origin='lower', extent=[-1, 1, -1, 1], cmap='inferno', vmin=0, vmax=1)
@@ -84,32 +96,36 @@ print(f'Actual discrete support: {np.count_nonzero(G)/G.size:.2%}')
 md(r'''
 ## 3. Spatial phase snapshots and the \(2\pi\) range
 
-The color scale is fixed at \(0\) to \(2\pi\). When an unwrapped local phase exceeds \(2\pi\), its displayed phase wraps back to zero; this is not a reset of the underlying phase memory. Different locations wrap at different times because \(G\) is nonuniform.
+Each column is the same time step; rows separately show the fading random initial phase, the input-driven phase, and their total. The color scale is fixed at \(0\) to \(2\pi\). Wrapping is only for display and never resets the underlying state. The initial random map extends across the plane, while the input-driven phase is limited to the chosen 80% support.
 ''')
 code('''
-snapshot_steps = [0, 1, 10, 29, 50]
-fig, axes = plt.subplots(1, len(snapshot_steps), figsize=(15, 3.3), constrained_layout=True)
-for ax, k in zip(axes, snapshot_steps):
-    im = ax.imshow(wrap_phase(q[k]*G), cmap='twilight', vmin=0, vmax=2*np.pi)
-    ax.set_title(f'k={k}, peak={q[k]/np.pi:.2f}π'); ax.axis('off')
-fig.colorbar(im, ax=axes, label='wrapped local phase (rad)', shrink=.8); plt.show()
-print('Local phase range:', wrap_phase(q[:, None, None]*G).min(), 'to', wrap_phase(q[:, None, None]*G).max(), 'rad')
+snapshot_steps = [0, 10, 25, 45, 79]
+fig, axes = plt.subplots(3, len(snapshot_steps), figsize=(15, 8), constrained_layout=True)
+for row, (label, maps) in enumerate([('initial decay', initial_decay), ('input-driven', driven_phase), ('total', total_phase)]):
+    for col, k in enumerate(snapshot_steps):
+        ax = axes[row, col]
+        im = ax.imshow(wrap_phase(maps[k]), cmap='twilight', vmin=0, vmax=2*np.pi)
+        ax.set_title(f'{label}, k={k}', fontsize=9); ax.axis('off')
+fig.colorbar(im, ax=axes, label='wrapped local phase (rad)', shrink=.7); plt.show()
+print('Wrapped total phase range:', wrap_phase(total_phase).min(), 'to', wrap_phase(total_phase).max(), 'rad')
 ''')
 md(r'''
 ## 4. Fixed scattering: phase to speckle
 
-The same fixed SLM input, objective pupils, and random scattering realization are used for every frame. The optical path is the existing coherent effective model:
+The same fixed SLM probe, objective pupils, and random scattering realization are used for every frame. The random initial phase is a separate, **decaying perturbation**; the underlying scattering operators remain fixed. Here the external input drives the phase increment directly, not the SLM probe. The optical path is the existing coherent effective model:
 \[
-E_{\rm CCD}=O_2\,B\,\mathrm{diag}(e^{i\phi_k})\,A\,O_1E_{\rm SLM},\qquad I_k=|E_{\rm CCD}|^2.
+E_{\rm CCD}=O_2\,B\,\mathrm{diag}(e^{i\Phi_k})\,A\,O_1E_{\rm SLM},\qquad I_k=|E_{\rm CCD}|^2.
 \]
-This is a fixed disordered propagation with one inserted phase screen, **not** an exact single-scattering or Maxwell solver. There is no electronic feedback and no changing input in this verification. Noise is disabled so the effect of phase alone is visible. The CCD images share one raw intensity scale; the correlation uses raw images and is computed relative to the zero-phase image.
+This is a fixed disordered propagation with one inserted phase screen, **not** an exact single-scattering or Maxwell solver. There is no electronic feedback. Noise is disabled so the effect of phase alone is visible. The CCD images share one raw intensity scale. A no-input control uses the same initial phase and optical operators but sets every increment to zero. Both controls share the exact same initial frame.
 ''')
 code('''
 optics = PhaseOnlyOptics(seed=42, optical_shape=shape, pupil_radius=(0.25, 0.25))
-intensities = np.array([np.abs(optics.field(qk*G))**2 for qk in q])
+intensities = np.array([np.abs(optics.field(phase))**2 for phase in total_phase])
+no_drive_intensities = np.array([np.abs(optics.field(phase))**2 for phase in initial_decay])
 reference = intensities[0]
 correlations = np.array([intensity_correlation(reference, image) for image in intensities])
-relative_change = np.array([np.linalg.norm(image-reference)/np.linalg.norm(reference) for image in intensities])
+control_correlations = np.array([intensity_correlation(reference, image) for image in no_drive_intensities])
+drive_change = np.array([np.linalg.norm(image-control)/np.linalg.norm(control) for image, control in zip(intensities, no_drive_intensities)])
 vmax = max(intensities[k].max() for k in snapshot_steps)
 fig, axes = plt.subplots(1, len(snapshot_steps), figsize=(15, 3.3), constrained_layout=True)
 for ax, k in zip(axes, snapshot_steps):
@@ -117,8 +133,11 @@ for ax, k in zip(axes, snapshot_steps):
     ax.set_title(f'k={k}, corr={correlations[k]:.3f}'); ax.axis('off')
 fig.colorbar(im, ax=axes, label='raw CCD intensity', shrink=.8); plt.show()
 fig, axes = plt.subplots(2, 1, figsize=(10, 5), sharex=True, constrained_layout=True)
-axes[0].plot(t, correlations); axes[0].set(ylabel='Pearson correlation', title='Speckle response relative to k=0')
-axes[1].plot(t, relative_change); axes[1].set(xlabel='time step k', ylabel='relative intensity change')
+axes[0].plot(t, correlations, label='with input-driven increment')
+axes[0].plot(t, control_correlations, '--', label='initial phase decay only')
+axes[0].set(ylabel='Pearson correlation', title='Speckle response relative to the common initial frame')
+axes[0].legend()
+axes[1].plot(t, drive_change); axes[1].set(xlabel='time step k', ylabel='relative change vs no-input')
 for ax in axes: ax.grid(alpha=.25)
 plt.show()
 ''')
@@ -128,7 +147,7 @@ md(r'''
 Adding \(2\pi\) to **every local phase** must preserve the complex field and intensity. A spatially uniform global phase also leaves intensity unchanged. By contrast, \(q=2\pi\) with a nonuniform \(G\) does **not** add \(2\pi\) to every pixel: \(2\pi G(x,y)\) is generally nonuniform, so its speckle need not match \(q=0\).
 ''')
 code('''
-phase = q[10]*G
+phase = total_phase[10]
 field = optics.field(phase)
 field_2pi = optics.field(phase+2*np.pi)
 zero = optics.field(np.zeros(shape))
@@ -144,7 +163,7 @@ assert np.allclose(np.abs(global_phase)**2, np.abs(zero)**2, rtol=1e-4, atol=1e-
 md(r'''
 ## Interpretation and limitations
 
-This verifies numerical phase wrapping, a chosen fading-phase law, and the resulting speckle response of a fixed optical model. It does **not** establish that a real material has a \(1/r\) refractive-index perturbation or exponential phase dynamics. Those require physical assumptions, geometry, calibration, and experimental comparison. The phase-only screen neglects possible absorption changes, diffusion-dependent profile evolution, and full multiple-scattering changes. Once this basic response is understood, an input-dependent increment and a trained linear readout can be added for reservoir-computing tests.
+This verifies numerical phase wrapping, a chosen fading random phase, an input-driven phase increment, and the resulting speckle response of a fixed optical model. It does **not** establish that a real material has a \(1/r\) refractive-index perturbation or exponential phase dynamics. Those require physical assumptions, geometry, calibration, and experimental comparison. The phase-only screen neglects possible absorption changes, diffusion-dependent profile evolution, and full multiple-scattering changes. There is no trained readout or RC benchmark in this phase verification; that can be added after studying this response.
 ''')
 
 notebook = {'cells': cells, 'metadata': {'kernelspec': {'display_name': 'Python 3',
