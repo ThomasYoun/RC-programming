@@ -33,7 +33,7 @@ For clarity, array `features[k]` stores \(r_{k+1}\), the image **after** writing
 
 All conditions use the same initial unwrapped random map, scattering realization, SLM probe and radial \(G\) (80% support). Instant mode deliberately overwrites the initial phase on its first write. The random initial map is sampled from \(U[0,6\pi)\), treated as an unwrapped state, and decays in the fading cases. The \(6\pi\) upper limit is adjustable. Camera shot and read noise are applied before downsampling; the ideal condition omits both. Pupil aberrations and SLM jitter are not included. All values are model assumptions, not calibrated parameters.
 
-With the same per-step \(\beta\), changing \(\tau\) also changes the steady-state response: the peak driven phase at constant input is \(\beta u/(1-a)\). Thus these comparisons change both memory duration and steady-state phase magnitude; they do not isolate \(\tau\) alone. Unwrapped phase is never capped at \(2\pi\), even though optical phase is periodic. The requested long time constants are compared with the earlier \(\tau=2,8,32\) and with the same 200-step washout. This washout is intentionally held fixed for comparison, **not** assumed sufficient for long \(\tau\).
+With the same per-step \(\beta\), changing \(\tau\) also changes the steady-state response: the peak driven phase at constant input is \(\beta u/(1-a)\). Thus these comparisons change both memory duration and steady-state phase magnitude; they do not isolate \(\tau\) alone. Unwrapped phase is never capped at \(2\pi\), even though optical phase is periodic. We compare \(\tau=2,5,10,50,100\) with the same 200-step washout. This washout is intentionally held fixed for comparison, **not** assumed sufficient for every \(\tau\).
 
 Only \(W_{\rm out}\) is trained by ridge regression. The camera features are standardized using the fit segment only; the bias is unregularized. Despite many CCD pixels, the long-term phase dynamics have only **one driven scalar memory** because the spatial write profile is fixed.
 ''')
@@ -54,17 +54,14 @@ initial_phase_max = 6*np.pi  # adjustable upper limit of the unwrapped initial s
 initial = np.random.default_rng(2026).uniform(0, initial_phase_max, shape)
 optics = PhaseOnlyOptics(seed=42, optical_shape=shape, pupil_radius=(0.25, 0.25))
 phase_increment_max = 2*np.pi  # u ∈ [0,1] maps to a peak write of 0–2π rad
-cases = [('Static, noisy', 'static', 8, True),
-         ('Instant, noisy', 'instant', 8, True),
+cases = [('Static, noisy', 'static', 2, True),
+         ('Instant, noisy', 'instant', 2, True),
          ('Fading τ=2, noisy', 'memory', 2, True),
-         ('Fading τ=8, noisy', 'memory', 8, True),
-         ('Fading τ=32, noisy', 'memory', 32, True),
+         ('Fading τ=5, noisy', 'memory', 5, True),
          ('Fading τ=10, noisy', 'memory', 10, True),
          ('Fading τ=50, noisy', 'memory', 50, True),
          ('Fading τ=100, noisy', 'memory', 100, True),
-         ('Fading τ=500, noisy', 'memory', 500, True),
-         ('Fading τ=1000, noisy', 'memory', 1000, True),
-         ('Fading τ=8, ideal', 'memory', 8, False)]
+         ('Fading τ=10, ideal', 'memory', 10, False)]
 def features_for(inputs, case, return_phase=False):
     label, mode, tau, noisy = case
     beta = phase_increment_max
@@ -86,10 +83,10 @@ print(f'CCD features: {np.prod(camera_shape)}; objective pupils and scattering f
 md(r'''
 ### Initial-state persistence and phase build-up
 
-After \(n\) writes, the initial phase component is multiplied by \(e^{-n/\tau}\). This is distinct from the phase accumulated from inputs. The table reports the residual after the 200-step washout and at the test boundary, plus the approximate number of steps required to reduce it below 1%. For \(\tau=500\) and \(1000\), achieving that threshold would require more steps than the entire 2,000-step training segment. We retain the requested split; later plots expose phase drift rather than silently changing the protocol.
+After \(n\) writes, the initial phase component is multiplied by \(e^{-n/\tau}\). This is distinct from the phase accumulated from inputs. The table reports the residual after the 200-step washout and at the test boundary, plus the approximate number of steps required to reduce it below 1%. For \(\tau=100\), the threshold takes 461 steps, so the 200-step washout leaves a substantial initial-phase contribution in early training. We retain the requested split; later plots expose phase drift rather than silently changing the protocol.
 ''')
 code('''
-tau_values = [10, 50, 100, 500, 1000]
+tau_values = [2, 5, 10, 50, 100]
 print(f"{'τ':>6}{'after 200':>15}{'after 2000':>15}{'steps to <1%':>17}{'steady peak/π at u=1':>26}")
 for tau in tau_values:
     # Strict inequality: n must exceed tau*log(100), even if it is an integer.
@@ -201,7 +198,7 @@ for label, scores in nonlinear_scores.items():
 md(r'''
 ## 5. Interpretation and limitations
 
-The random initial phase is a transient, not input-driven long-term memory. With long \(\tau\), the original phase can remain substantial after the fixed 200-step washout and even into the test segment. The input-driven part still has only one dynamical scalar coefficient of \(G\). A high Mackey–Glass score alone does not establish useful fading memory: compare with instant, persistence, and the independent-input task. Phase periodicity, large fixed-increment accumulation, nonstationary initial transients, camera noise and ridge regularization all affect recoverability. \(G\), \(\tau\), gain, camera noise, and random seeds here are illustrative. Test multiple independent optical realizations, initial maps, input/noise seeds and parameters before claiming robustness. No temperature dynamics or experimentally calibrated index changes are represented.
+The random initial phase is a transient, not input-driven long-term memory. With \(\tau=100\), the original phase remains substantial after the fixed 200-step washout, though it decays almost entirely before the test segment. The input-driven part still has only one dynamical scalar coefficient of \(G\). A high Mackey–Glass score alone does not establish useful fading memory: compare with instant, persistence, and the independent-input task. Phase periodicity, large fixed-increment accumulation, nonstationary initial transients, camera noise and ridge regularization all affect recoverability. \(G\), \(\tau\), gain, camera noise, and random seeds here are illustrative. Test multiple independent optical realizations, initial maps, input/noise seeds and parameters before claiming robustness. No temperature dynamics or experimentally calibrated index changes are represented.
 ''')
 
 notebook = {'cells': cells, 'metadata': {'kernelspec': {'display_name': 'Python 3', 'language': 'python', 'name': 'python3'}, 'language_info': {'name': 'python', 'version': '3'}}, 'nbformat': 4, 'nbformat_minor': 4}
