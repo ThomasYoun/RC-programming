@@ -191,5 +191,5 @@ Use the direct scalar baseline and instant condition to see whether fading provi
 ''')
 
 notebook = {'cells': cells, 'metadata': {'kernelspec': {'display_name': 'Python 3', 'language': 'python', 'name': 'python3'}, 'language_info': {'name': 'python', 'version': '3'}}, 'nbformat': 4, 'nbformat_minor': 4}
-output = Path(sys.argv[1]) if len(sys.argv) > 1 else Path('ks_phase_memory_rc.ipynb')
+output = Path(sys.argv[1]) if len(sys.argv) > 1 else Path('ks_single_sensor_observer.ipynb')
 output.write_text(json.dumps(notebook, ensure_ascii=False, indent=1)+'\n', encoding='utf-8')
