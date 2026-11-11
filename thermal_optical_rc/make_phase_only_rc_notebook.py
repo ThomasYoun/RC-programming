@@ -13,7 +13,7 @@ def code(text):
 md(r'''
 # Reservoir computing with an input-driven phase screen
 
-The phase-only model is now tested on one-step Mackey–Glass prediction and independent-input delay reconstruction. There is no temperature calculation, CCD-to-SLM feedback, or electronic reservoir recurrence. The SLM probe, objective pupils, and scattering operators remain fixed; input drives the phase screen directly. This is a simulation, not a calibrated thermo-optic experiment.
+The phase-only model is tested on teacher-forced and free-running Mackey–Glass prediction and independent-input delay reconstruction. There is no temperature calculation or CCD-speckle-to-SLM state feedback. The SLM probe, objective pupils, and scattering operators remain fixed; input drives the phase screen directly. The free-running benchmark intentionally feeds the digital readout's prediction back as the next driving input; it is a closed-loop numerical experiment, not an autonomous feedback-free physical device. This is a simulation, not a calibrated thermo-optic experiment.
 
 Run this notebook from the `thermal_optical_rc` directory, with `phase_only_rc.py`, `phase_only_optics.py`, `optical_physical_memory.py`, and `MackeyGlass_t17.txt` alongside it. NumPy, PyTorch and Matplotlib are required. For reproducible runtimes, limiting BLAS threads may help.
 ''')
@@ -43,7 +43,7 @@ import matplotlib.pyplot as plt
 import torch
 from pathlib import Path
 from phase_only_optics import PhaseOnlyOptics, radial_profile
-from phase_only_rc import simulate_phase_rc, chronological_indices, r2_score
+from phase_only_rc import simulate_phase_rc, free_phase_rollout, chronological_indices, r2_score
 from optical_physical_memory import RidgeReadout, nrmse
 
 torch.set_num_threads(1)
@@ -113,11 +113,12 @@ print(f"Train segment=2000, washout=200, refit={len(splits['refit'])}, validatio
 print(f'Test relative steps: 0–{len(te)-1}; target indices: {te[0]+1}–{te[-1]+1}')
 print(f'Test input clipping fraction: {np.mean(u[te] != raw[te]):.4f}')
 print(f'Persistence baseline NRMSE: {nrmse(target[te], u[te]):.4f}')
-mg_predictions, mg_scores, mg_phases = {}, {}, {}
+mg_predictions, mg_scores, mg_phases, mg_models = {}, {}, {}, {}
 for case in cases:
     label = case[0]
     X, mg_phases[label] = features_for(u, case, return_phase=True)
     model, alpha = fit_validated(X, target, splits['fit'], splits['valid'], splits['refit'])
+    mg_models[label] = model
     pred = model.predict(X[te])
     mg_predictions[label] = pred
     mg_scores[label] = (nrmse(target[te], pred), r2_score(target[te], pred), alpha)
@@ -147,7 +148,57 @@ ax.set(xlabel='input step k', ylabel='unwrapped phase at profile peak / π', tit
 ax.grid(alpha=.2); ax.legend(ncol=3); plt.show()
 ''')
 md(r'''
-## 3. Independent-input delay reconstruction
+## 3. Free-running Mackey–Glass prediction
+
+The **same** readout, physical parameters, fixed optical realization, camera-noise settings and training-only scaling as above are used; no weights are retrained or selected on the test set. First the true training inputs \(u_0,\ldots,u_{1999}\) drive the phase memory and camera, including the 200-step washout. The last training feature predicts the first test value \(\hat u_{2000}\). Its output is then used as the next external drive, producing the feature for \(\hat u_{2001}\), and so on for 1,000 test values.
+
+This section intentionally introduces **digital output-to-input feedback** to test free prediction: previous \(W_{\mathrm{out}}\) predictions, not the preceding camera speckle, drive the phase screen. This feedback is distinct from the phase memory itself. It is not the feedback-free physical-memory architecture used for teacher forcing, and it does not demonstrate a physically autonomous device. After the training boundary no true test input is supplied, and the phase state and camera-noise random stream continue from the training drive.
+
+The optical model accepts inputs in \([0,1]\), so each predicted value used as feedback is clipped to that range; the reported predictions and error use the **unclipped readout outputs**, while `clip fraction` counts how often feedback required clipping. Clipping affects the closed-loop dynamics. The true target is the normalized, unclipped series at indices 2000–2999. A free-running persistence baseline remains constant at the last observed training input, rather than using future true inputs. The original teacher-forced scores use target indices 2001–3000; the final two columns below compare both modes over their common target indices 2001–2999.
+
+The model retains fixed \(\beta=2\pi\), and the initial phase continues across the boundary; for \(\tau=100\), a 200-step washout still leaves a substantial initial contribution early in training. Strong nonlinearity, phase wrapping, camera noise and clipping can accumulate error during the free rollout. No claim is made about long-term climate reconstruction from a single trajectory.
+''')
+code('''
+free_target = raw[2000:3000]
+assert len(free_target) == 1000
+free_predictions, free_rollouts, free_scores = {}, {}, {}
+free_persistence = np.full(len(free_target), u[1999])
+print(f'Free target indices: 2000–2999; last true drive index: 1999; predictions: {len(free_target)}')
+print(f'Free constant-persistence baseline NRMSE: {nrmse(free_target, free_persistence):.4f}')
+print(f"{'Condition':<22}{'Free NRMSE':>13}{'Free R²':>11}{'Clip fraction':>16}{'Free common':>14}{'Teacher common':>17}")
+for label, mode, tau, noisy in cases:
+    result = free_phase_rollout(u[:2000], mg_models[label], optics, G, initial,
+        tau=tau, beta=phase_increment_max, mode=mode, camera_shape=camera_shape,
+        photon_scale=5000 if noisy else None,
+        read_noise_electrons=3.0 if noisy else 0, noise_seed=123,
+        n_steps=len(free_target))
+    prediction = result['predictions']
+    assert prediction.shape == free_target.shape
+    free_predictions[label] = prediction
+    free_rollouts[label] = result
+    free_scores[label] = (nrmse(free_target, prediction), r2_score(free_target, prediction))
+    common_target = raw[2001:3000]
+    free_common = nrmse(common_target, prediction[1:])
+    teacher_common = nrmse(common_target, mg_predictions[label][:-1])
+    print(f"{label:<22}{free_scores[label][0]:>13.4f}{free_scores[label][1]:>11.4f}{result['clipping_fraction']:>16.2%}{free_common:>14.4f}{teacher_common:>17.4f}")
+''')
+code('''
+test_steps = np.arange(len(free_target))
+nrows = (len(cases)+1)//2
+for view, stop in [('full test', len(free_target)), ('first 200 steps', 200)]:
+    fig, axes = plt.subplots(nrows, 2, figsize=(14, 2.8*nrows), sharex=True, constrained_layout=True, squeeze=False)
+    for ax, case in zip(axes.flat, cases):
+        label = case[0]
+        ax.plot(test_steps[:stop], free_target[:stop], color='black', lw=.9, label='target')
+        ax.plot(test_steps[:stop], free_predictions[label][:stop], lw=.8, label='free prediction')
+        ax.set_title(f'{label}: full-test NRMSE={free_scores[label][0]:.3f}; {view}', fontsize=9)
+        ax.set_xlim(0, stop); ax.grid(alpha=.15); ax.legend(fontsize=7)
+    for ax in axes[-1]: ax.set_xlabel('test time step')
+    for ax in list(axes.flat)[len(cases):]: ax.set_visible(False)
+    plt.show()
+''')
+md(r'''
+## 4. Independent-input delay reconstruction
 
 With independent uniform inputs, a memoryless current-input mapping cannot systematically reconstruct an earlier input. At frame `features[k]`, reconstruct \(u_{k-d}\) for delays up to 500 steps. Here \(d=0\) is the input just written; \(d\ge1\) probes past inputs retained by the physical phase dynamics. For \(d>200\), fitting begins at index \(d\) so every training target exists; all other splits remain fixed. Thus the longest delays have fewer training examples. A different ridge strength is selected per condition and delay, on training-segment validation only. The first 200 samples are washout, and evaluation uses the last 1,000 samples. Positive held-out \(R^2\) indicates performance beyond the retrospective test-mean baseline; negative values are possible. These sparse scores are not a total memory-capacity estimate.
 ''')
@@ -186,7 +237,7 @@ ax.set_xscale('symlog', linthresh=1)
 ax.grid(alpha=.25); ax.legend(fontsize=8, ncol=2); plt.show()
 ''')
 md(r'''
-## 4. Nonlinear readout tasks
+## 5. Nonlinear readout tasks
 
 Using the same independent-input frames and train/validation/test split, test the second-order function \(P_2(x)=(3x^2-1)/2\) for the just-written input and for the preceding input, as well as their product \(x_kx_{k-1}\), where \(x_k=2u_k-1\). Each task uses its own validated ridge readout. The input-only task tests nonlinear optical encoding without requiring memory; the delayed and product tasks require information about past input. These scores are computed from the same simulation frames as the previous section.
 ''')
@@ -196,7 +247,7 @@ for label, scores in nonlinear_scores.items():
     print(f'{label:<22}' + ''.join(f'{value:>21.3f}' for value in scores))
 ''')
 md(r'''
-## 5. Interpretation and limitations
+## 6. Interpretation and limitations
 
 The random initial phase is a transient, not input-driven long-term memory. With \(\tau=100\), the original phase remains substantial after the fixed 200-step washout, though it decays almost entirely before the test segment. The input-driven part still has only one dynamical scalar coefficient of \(G\). A high Mackey–Glass score alone does not establish useful fading memory: compare with instant, persistence, and the independent-input task. Phase periodicity, large fixed-increment accumulation, nonstationary initial transients, camera noise and ridge regularization all affect recoverability. \(G\), \(\tau\), gain, camera noise, and random seeds here are illustrative. Test multiple independent optical realizations, initial maps, input/noise seeds and parameters before claiming robustness. No temperature dynamics or experimentally calibrated index changes are represented.
 ''')
