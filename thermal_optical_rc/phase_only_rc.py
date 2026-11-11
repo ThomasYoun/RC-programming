@@ -33,7 +33,7 @@ def chronological_indices(train_length=2000, washout=200, validation_length=400,
 def simulate_phase_rc(inputs, optics, profile, initial_phase, tau, beta,
                       mode='memory', camera_shape=(16, 16), photon_scale=None,
                       read_noise_electrons=0.0, noise_seed=123, noise_rng=None,
-                      return_final_phase=False):
+                      return_final_phase=False, slm_inputs=None):
     """Apply input k, then observe the resulting phase and CCD speckle.
 
     memory: phi_next = exp(-1/tau)*phi + beta*u[k]*profile;
@@ -47,6 +47,9 @@ def simulate_phase_rc(inputs, optics, profile, initial_phase, tau, beta,
     Pass a persistent numpy Generator as noise_rng to continue the noise stream
     across chunks. Set return_final_phase to also return the final unwrapped
     phase map, allowing the next chunk to continue without resetting memory.
+    If slm_inputs is supplied it contains one normalized input vector per step,
+    encoded by optics.field_for_input; otherwise optics.field uses a fixed probe.
+    The scalar inputs argument continues to determine the phase write.
     """
     u = np.asarray(inputs, dtype=float)
     g = np.asarray(profile, dtype=float)
@@ -57,6 +60,14 @@ def simulate_phase_rc(inputs, optics, profile, initial_phase, tau, beta,
         raise ValueError('phase and profile must match optical_shape')
     if not np.isfinite(phase).all() or not np.isfinite(g).all():
         raise ValueError('phase and profile must be finite')
+    if slm_inputs is not None:
+        slm_inputs = np.asarray(slm_inputs, dtype=float)
+        if (slm_inputs.ndim != 2 or slm_inputs.shape[0] != len(u)
+                or not np.isfinite(slm_inputs).all()
+                or np.any((slm_inputs < 0) | (slm_inputs > 1))):
+            raise ValueError('slm_inputs must be a finite [time, component] array in [0,1]')
+        if not hasattr(optics, 'field_for_input'):
+            raise ValueError('optics must implement field_for_input for slm_inputs')
     if mode not in ('memory', 'instant', 'static'):
         raise ValueError('mode must be memory, instant or static')
     if not np.isfinite(tau) or tau <= 0 or not np.isfinite(beta):
@@ -83,7 +94,8 @@ def simulate_phase_rc(inputs, optics, profile, initial_phase, tau, beta,
             phase = beta*uk*g
         # Static means the initially random phase remains frozen.
         center_phase[k] = phase[peak]
-        intensity = np.abs(optics.field(phase))**2
+        field = optics.field(phase) if slm_inputs is None else optics.field_for_input(phase, slm_inputs[k])
+        intensity = np.abs(field)**2
         if photon_scale is not None:
             electrons = rng.poisson(intensity*photon_scale).astype(float)
             if read_noise_electrons:
@@ -99,7 +111,7 @@ def simulate_phase_rc(inputs, optics, profile, initial_phase, tau, beta,
 def free_phase_rollout(history_inputs, model, optics, profile, initial_phase,
                        tau, beta, mode='memory', camera_shape=(16, 16),
                        photon_scale=None, read_noise_electrons=0.,
-                       noise_seed=123, n_steps=1000):
+                       noise_seed=123, n_steps=1000, encode_slm=False):
     """Autonomous one-step rollout seeded exclusively by observed history.
 
     Warm the phase with history_inputs, then use the final post-write feature to
@@ -109,6 +121,8 @@ def free_phase_rollout(history_inputs, model, optics, profile, initial_phase,
 
     The feedback path is an external readout-to-input forecasting loop; it is
     not CCD-to-SLM feedback within the phase-only physical reservoir.
+    If encode_slm is true, the same scalar input is threshold-encoded onto the
+    SLM as well as writing the phase state, using a fixed encoder.
     ``predictions`` are raw readout outputs, ``feedback_inputs`` are clipped
     values actually written, and ``phase_peak`` records the phase from which
     each prediction was made, starting with the final warm-up observation.
@@ -126,7 +140,8 @@ def free_phase_rollout(history_inputs, model, optics, profile, initial_phase,
                   mode=mode, camera_shape=camera_shape, photon_scale=photon_scale,
                   read_noise_electrons=read_noise_electrons, noise_rng=rng,
                   return_final_phase=True)
-    warm_features, warm_phase, phase = simulate_phase_rc(history, initial_phase=initial_phase, **kwargs)
+    warm_slm = history[:, None] if encode_slm else None
+    warm_features, warm_phase, phase = simulate_phase_rc(history, initial_phase=initial_phase, slm_inputs=warm_slm, **kwargs)
     predictions = np.empty(n_steps, dtype=float)
     feedback_inputs = np.empty(n_steps-1, dtype=float)
     phase_peak = np.empty(n_steps, dtype=float)
@@ -141,8 +156,9 @@ def free_phase_rollout(history_inputs, model, optics, profile, initial_phase,
     phase_peak[0] = warm_phase[-1]
     for k in range(1, n_steps):
         feedback_inputs[k-1] = np.clip(predictions[k-1], 0.0, 1.0)
+        feedback_slm = feedback_inputs[k-1:k, None] if encode_slm else None
         features, peak, phase = simulate_phase_rc(
-            feedback_inputs[k-1:k], initial_phase=phase, **kwargs)
+            feedback_inputs[k-1:k], initial_phase=phase, slm_inputs=feedback_slm, **kwargs)
         phase_peak[k] = peak[0]
         predictions[k] = predict_one(features[-1])
     clipping_fraction = float(np.mean(feedback_inputs != predictions[:-1])) if n_steps > 1 else 0.0
