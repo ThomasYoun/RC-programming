@@ -13,25 +13,25 @@ def code(text):
 md(r'''
 # Reservoir computing with an input-driven phase screen
 
-The phase-only model is tested on teacher-forced and free-running Mackey–Glass prediction and independent-input delay reconstruction. There is no temperature calculation or CCD-speckle-to-SLM state feedback. The SLM probe, objective pupils, and scattering operators remain fixed; input drives the phase screen directly. The free-running benchmark intentionally feeds the digital readout's prediction back as the next driving input; it is a closed-loop numerical experiment, not an autonomous feedback-free physical device. This is a simulation, not a calibrated thermo-optic experiment.
+The phase-only model is tested on teacher-forced and free-running Mackey–Glass prediction and independent-input delay reconstruction. At each step a fixed random-threshold mask maps the scalar input to a full two-dimensional phase-only SLM image. There is no temperature calculation or CCD-speckle-to-SLM state feedback. Objective pupils, scattering operators and the SLM encoder remain fixed; the current input also drives the phase screen. The free-running benchmark intentionally feeds the digital readout's prediction back as the next driving input; it is a closed-loop numerical experiment, not an autonomous feedback-free physical device. This is a simulation, not a calibrated thermo-optic experiment.
 
-Run this notebook from the `thermal_optical_rc` directory, with `phase_only_rc.py`, `phase_only_optics.py`, `optical_physical_memory.py`, and `MackeyGlass_t17.txt` alongside it. NumPy, PyTorch and Matplotlib are required. For reproducible runtimes, limiting BLAS threads may help.
+Run this notebook from the `thermal_optical_rc` directory, with `spatial_input_optics.py`, `phase_only_rc.py`, `phase_only_optics.py`, `optical_physical_memory.py`, and `MackeyGlass_t17.txt` alongside it. NumPy, PyTorch and Matplotlib are required. For reproducible runtimes, limiting BLAS threads may help.
 ''')
 md(r'''
 ## 1. Causal optical model and comparisons
 
-At time \(k\), input \(u_k\in[0,1]\) writes to an **unwrapped** phase map and the resulting speckle is observed:
+At time \(k\), input \(u_k\in[0,1]\) is converted by one fixed random threshold matrix \(T_p\) into the SLM phase \(E_{{\rm SLM},k}(p)=e^{i\pi\mathbf1[u_k>T_p]}\). The same input writes to an **unwrapped** phase map and the resulting speckle is observed:
 \[
 \Phi_{k+1}=a\Phi_k+\beta u_k G,\quad a=e^{-1/\tau},\qquad
-r_{k+1}=\operatorname{downsample}\left|O_2 B\operatorname{diag}(e^{i\Phi_{k+1}})A O_1E_{\rm SLM}\right|^2.
+r_{k+1}=\operatorname{downsample}\left|O_2 B\operatorname{diag}(e^{i\Phi_{k+1}})A O_1E_{{\rm SLM},k}\right|^2.
 \]
 For clarity, array `features[k]` stores \(r_{k+1}\), the image **after** writing \(u_k\). Its one-step prediction target is \(u_{k+1}\). This is the same causal update as the phase-verification notebook, shifted to index each camera frame by its most recent written input. We compare:
 
-* **Static:** the same initial random phase is frozen and independent of input.
+* **Static:** the same initial random perturbation phase is frozen; the SLM still encodes each current input.
 * **Instant:** \(\Phi_{k+1}=2\pi u_kG\); no retained input history.
 * **Fading:** the displayed values of \(\tau\), with **fixed \(\beta=2\pi\)** so that an input in \([0,1]\) writes an increment in \([0,2\pi]\) radians at the peak of \(G\). At any pixel the increment is \(2\pi u_kG(x,y)\).
 
-All conditions use the same initial unwrapped random map, scattering realization, SLM probe and radial \(G\) (80% support). Instant mode deliberately overwrites the initial phase on its first write. The random initial map is sampled from \(U[0,6\pi)\), treated as an unwrapped state, and decays in the fading cases. The \(6\pi\) upper limit is adjustable. Camera shot and read noise are applied before downsampling; the ideal condition omits both. Pupil aberrations and SLM jitter are not included. All values are model assumptions, not calibrated parameters.
+All conditions use the same initial unwrapped random map, scattering realization, fixed threshold mask and radial \(G\) (80% support). The SLM image varies with the current input and never contains a previous speckle state. Instant mode deliberately overwrites the initial phase on its first write. The random initial map is sampled from \(U[0,6\pi)\), treated as an unwrapped state, and decays in the fading cases. The \(6\pi\) upper limit is adjustable. Camera shot and read noise are applied before downsampling; the ideal condition omits both. Pupil aberrations and SLM jitter are not included. Treating the same input as both the SLM signal and phase-write drive is an uncalibrated coupling assumption; a phase-only SLM does not automatically implement it.
 
 With the same per-step \(\beta\), changing \(\tau\) also changes the steady-state response: the peak driven phase at constant input is \(\beta u/(1-a)\). Thus these comparisons change both memory duration and steady-state phase magnitude; they do not isolate \(\tau\) alone. Unwrapped phase is never capped at \(2\pi\), even though optical phase is periodic. We compare \(\tau=2,5,10,50,100\) with the same 200-step washout. This washout is intentionally held fixed for comparison, **not** assumed sufficient for every \(\tau\).
 
@@ -42,7 +42,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import torch
 from pathlib import Path
-from phase_only_optics import PhaseOnlyOptics, radial_profile
+from phase_only_optics import radial_profile
+from spatial_input_optics import ThresholdSLMOptics
 from phase_only_rc import simulate_phase_rc, free_phase_rollout, chronological_indices, r2_score
 from optical_physical_memory import RidgeReadout, nrmse
 
@@ -52,7 +53,7 @@ shape, camera_shape = (128, 128), (16, 16)
 G = radial_profile(shape, core_radius=0.12, support_fraction=0.8)
 initial_phase_max = 6*np.pi  # adjustable upper limit of the unwrapped initial state
 initial = np.random.default_rng(2026).uniform(0, initial_phase_max, shape)
-optics = PhaseOnlyOptics(seed=42, optical_shape=shape, pupil_radius=(0.25, 0.25))
+optics = ThresholdSLMOptics(n_inputs=1, seed=42, optical_shape=shape, pupil_radius=(0.25, 0.25))
 phase_increment_max = 2*np.pi  # u ∈ [0,1] maps to a peak write of 0–2π rad
 cases = [('Static, noisy', 'static', 2, True),
          ('Instant, noisy', 'instant', 2, True),
@@ -67,7 +68,8 @@ def features_for(inputs, case, return_phase=False):
     beta = phase_increment_max
     features, phase = simulate_phase_rc(inputs, optics, G, initial, tau, beta, mode=mode,
         camera_shape=camera_shape, photon_scale=5000 if noisy else None,
-        read_noise_electrons=3.0 if noisy else 0, noise_seed=123)
+        read_noise_electrons=3.0 if noisy else 0, noise_seed=123,
+        slm_inputs=np.asarray(inputs)[:, None])
     return (features, phase) if return_phase else features
 
 def fit_validated(features, target, fit_idx, valid_idx, refit_idx):
@@ -79,6 +81,21 @@ def fit_validated(features, target, fit_idx, valid_idx, refit_idx):
 print(f'Phase support: {np.count_nonzero(G)/G.size:.2%}; max increment: {phase_increment_max/np.pi:.2f}π rad')
 print(f'Initial unwrapped phase range: [0, {initial_phase_max/np.pi:g}π) rad')
 print(f'CCD features: {np.prod(camera_shape)}; objective pupils and scattering fixed')
+''')
+md(r'''
+### Fixed-mask input encoding
+
+The same threshold matrix is used at every step and for every condition. White pixels encode phase \(\pi\), black pixels phase zero; all pixels belong to the current scalar input. The magnitude of the phase-only optical field is one and therefore appears white if plotted. No previous speckle is concatenated onto the SLM.
+''')
+code('''
+fig, axes = plt.subplots(1, 4, figsize=(12, 3), constrained_layout=True)
+for ax, value in zip(axes[:3], [.1, .5, .9]):
+    pattern = optics.encode(np.array([value]))
+    ax.imshow(pattern, cmap='gray', vmin=0, vmax=1)
+    ax.set_title(f'u={value:g}, phase 0 or π'); ax.axis('off')
+axes[3].imshow(np.abs(np.exp(1j*np.pi*optics.encode(np.array([.5])))), cmap='gray', vmin=0, vmax=1)
+axes[3].set_title('|exp(i phase)| = 1'); axes[3].axis('off')
+plt.show()
 ''')
 md(r'''
 ### Initial-state persistence and phase build-up
@@ -98,7 +115,7 @@ md(r'''
 
 The first 2,000 input steps are the training segment, including 200 washout steps. The final 400 training steps provide chronological validation for ridge strength; the chosen readout is then refit on all post-washout training data whose targets lie in the training segment. The last 1,000 input steps are the test segment. There is no state reset between training and test.
 
-Normalization uses only the fitting portion of the training segment. Inputs are clipped to \([0,1]\); target values are normalized but not clipped. Training predictions with targets crossing the validation or test boundary are excluded. The test receives the true inputs sequentially: this is **teacher-forced one-step prediction**, not autonomous forecasting. The persistence baseline predicts \(u_{k+1}\) from the current true value \(u_k\); because Mackey–Glass inputs are correlated, a static current-input mapping may perform well without memory. Here the instant phase control provides that comparison.
+Normalization uses only the fitting portion of the training segment. Inputs are clipped to \([0,1]\); target values are normalized but not clipped. Training predictions with targets crossing the validation or test boundary are excluded. The test receives the true inputs sequentially: this is **teacher-forced one-step prediction**, not autonomous forecasting. The persistence baseline predicts \(u_{k+1}\) from the current true value \(u_k\); because Mackey–Glass inputs are correlated, a memoryless current-input mapping may perform well. Static and instant phase controls both retain the current-input SLM encoding.
 ''')
 code('''
 splits = chronological_indices()
@@ -150,7 +167,7 @@ ax.grid(alpha=.2); ax.legend(ncol=3); plt.show()
 md(r'''
 ## 3. Free-running Mackey–Glass prediction
 
-The **same** readout, physical parameters, fixed optical realization, camera-noise settings and training-only scaling as above are used; no weights are retrained or selected on the test set. First the true training inputs \(u_0,\ldots,u_{1999}\) drive the phase memory and camera, including the 200-step washout. The last training feature predicts the first test value \(\hat u_{2000}\). Its output is then used as the next external drive, producing the feature for \(\hat u_{2001}\), and so on for 1,000 test values.
+The **same** readout, physical parameters, fixed optical realization, camera-noise settings and training-only scaling as above are used; no weights are retrained or selected on the test set. First the true training inputs \(u_0,\ldots,u_{1999}\) drive the SLM, phase memory and camera, including the 200-step washout. The last training feature predicts the first test value \(\hat u_{2000}\). Its output is then used as the next external drive, producing the feature for \(\hat u_{2001}\), and so on for 1,000 test values.
 
 This section intentionally introduces **digital output-to-input feedback** to test free prediction: previous \(W_{\mathrm{out}}\) predictions, not the preceding camera speckle, drive the phase screen. This feedback is distinct from the phase memory itself. It is not the feedback-free physical-memory architecture used for teacher forcing, and it does not demonstrate a physically autonomous device. After the training boundary no true test input is supplied, and the phase state and camera-noise random stream continue from the training drive.
 
@@ -171,7 +188,7 @@ for label, mode, tau, noisy in cases:
         tau=tau, beta=phase_increment_max, mode=mode, camera_shape=camera_shape,
         photon_scale=5000 if noisy else None,
         read_noise_electrons=3.0 if noisy else 0, noise_seed=123,
-        n_steps=len(free_target))
+        n_steps=len(free_target), encode_slm=True)
     prediction = result['predictions']
     assert prediction.shape == free_target.shape
     free_predictions[label] = prediction
