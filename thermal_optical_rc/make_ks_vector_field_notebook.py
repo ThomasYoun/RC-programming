@@ -1,0 +1,216 @@
+"""Generate the full-field KS threshold-encoded optical RC notebook."""
+import json
+from pathlib import Path
+import sys
+import textwrap
+
+cells = []
+def md(text):
+    cells.append({'cell_type': 'markdown', 'metadata': {}, 'source': textwrap.dedent(text).strip().splitlines(keepends=True)})
+def code(text):
+    cells.append({'cell_type': 'code', 'metadata': {}, 'execution_count': None, 'outputs': [], 'source': textwrap.dedent(text).strip().splitlines(keepends=True)})
+
+md(r'''
+# Full-field KS input encoding and phase-memory optical RC
+
+This notebook replaces the earlier one-sensor KS task with **complete spatial-field input and output**. Every time step supplies all 64 KS spatial values, encoded by a fixed random threshold map onto a two-dimensional SLM. The speckle readout predicts the full future KS field, and results are displayed as spatial–temporal images across all 1,000 test steps. No prior speckle or reservoir state is concatenated onto the SLM.
+
+The experiment uses a single phenomenological phase-memory channel and a fixed input-to-phase coupling described below. It is not a calibrated thermal optical experiment, nor a reproduction of the explicit-delay optical NGRC in [Wang et al.](https://www.nature.com/articles/s41377-025-01927-6). The older one-sensor observer has been retained separately as `ks_single_sensor_observer.ipynb`.
+
+Run from `thermal_optical_rc` with `ks_data.py`, `spatial_input_optics.py`, `phase_only_rc.py`, `phase_only_optics.py`, and `optical_physical_memory.py` in the same directory. NumPy, PyTorch, Matplotlib and Jupyter are required.
+''')
+md(r'''
+## 1. Fixed random-threshold encoding of a 64-component field
+
+Let \(\mathbf u_k=(u_{k,0},\ldots,u_{k,63})\in[0,1]^{64}\) denote the normalized KS field. Each SLM pixel \(p\) is assigned a fixed spatial-component index \(\ell_p\in\{0,\ldots,63\}\) and a fixed random threshold \(T_p\in[0,1)\). At every time step,
+\[
+B_k(p)=\mathbf1\!\left[u_{k,\ell_p}>T_p\right],\qquad
+\varphi_{\mathrm{SLM},k}(p)=\pi B_k(p),\qquad
+E_{\mathrm{SLM},k}(p)=e^{i\varphi_{\mathrm{SLM},k}(p)}.
+\]
+Assignments are randomly shuffled but balanced: every KS component controls the same number of pixels for the default 128×128 SLM. The component map, threshold matrix, scattering operators and pupils are initialized once and remain fixed. Every SLM pixel is assigned to the **current input field only**, with no feedback-state concatenation. The corresponding scalar MG notebook uses the same encoding with one input component, as in `RC_opMGSLM.ipynb`'s fixed-mask threshold idea, but without its previous-reservoir-state concatenation.
+
+With a phase-only SLM \(|E_{\mathrm{SLM}}|=1\), so its amplitude image is white; the binary phase image carries the information. All-zero and all-one images differ only by a global \(\pi\) phase and are indistinguishable to ideal intensity detection if all other phases are equal. This is a real encoding limitation, not evidence of memory.
+''')
+code('''
+import numpy as np
+import matplotlib.pyplot as plt
+import torch
+from ks_data import generate_ks
+from spatial_input_optics import ThresholdSLMOptics, localized_component_weights
+from phase_only_optics import radial_profile
+from phase_only_rc import simulate_phase_rc, chronological_indices
+from optical_physical_memory import RidgeReadout
+
+torch.set_num_threads(1)
+plt.rcParams['figure.dpi'] = 100
+train_length, washout, validation_length, test_length = 2000, 200, 400, 1000
+horizons = [1, 4, 16]
+shape, camera_shape, n_grid = (128, 128), (16, 16), 64
+dt_ks, length = .25, 22.
+ks = generate_ks(n_samples=train_length+test_length+max(horizons), n_grid=n_grid,
+                 domain_length=length, dt=dt_ks, warmup_steps=1000, seed=2026)
+fit_end = train_length-validation_length
+lo, hi = ks[:fit_end].min(), ks[:fit_end].max()  # one global range, training only
+if hi <= lo: raise ValueError('training field is constant')
+raw_inputs = (ks[:train_length+test_length]-lo)/(hi-lo)
+vectors = np.clip(raw_inputs, 0, 1)
+optics = ThresholdSLMOptics(n_inputs=n_grid, optical_shape=shape, pupil_radius=(.25, .25),
+                           seed=42, encoder_seed=271)
+G = radial_profile(shape, core_radius=.12, support_fraction=.8)
+initial = np.random.default_rng(2026).uniform(0, 6*np.pi, shape)
+heat_weights = localized_component_weights(n_grid, width_fraction=.125)
+phase_write = vectors @ heat_weights
+print(f'KS field: {ks.shape}; L={length:g}, grid={n_grid}, integration/sample step={dt_ks:g}')
+print(f'SLM: {shape}; each component controls {shape[0]*shape[1]//n_grid} threshold pixels')
+print(f'Test-field element clipping: {np.mean(raw_inputs[train_length:] != vectors[train_length:]):.2%}')
+print(f'Phase-screen support: {np.count_nonzero(G)/G.size:.2%}; scalar phase-write drive range: {phase_write.min():.3f}–{phase_write.max():.3f}')
+''')
+code('''
+sample_step = 2100
+pattern = optics.encode(vectors[sample_step])
+slm_phase = np.pi*pattern
+fig, axes = plt.subplots(2, 3, figsize=(13, 7), constrained_layout=True)
+im = axes[0, 0].imshow(optics.component_map, cmap='turbo', vmin=0, vmax=n_grid-1)
+axes[0, 0].set_title('fixed KS-component assignment'); fig.colorbar(im, ax=axes[0, 0], label='component index')
+im = axes[0, 1].imshow(optics.thresholds, cmap='gray', vmin=0, vmax=1)
+axes[0, 1].set_title('fixed random thresholds'); fig.colorbar(im, ax=axes[0, 1])
+im = axes[0, 2].imshow(pattern, cmap='gray', vmin=0, vmax=1)
+axes[0, 2].set_title(f'thresholded input B[k], k={sample_step}')
+im = axes[1, 0].imshow(slm_phase, cmap='twilight', vmin=0, vmax=np.pi)
+axes[1, 0].set_title('SLM phase (rad)'); cb=fig.colorbar(im, ax=axes[1, 0], ticks=[0, np.pi]); cb.ax.set_yticklabels(['0', 'π'])
+axes[1, 1].imshow(np.abs(np.exp(1j*slm_phase)), cmap='gray', vmin=0, vmax=1)
+axes[1, 1].set_title('SLM amplitude |exp(iφ)| = 1')
+axes[1, 2].plot(np.arange(n_grid), vectors[sample_step], label='KS input')
+axes[1, 2].plot(np.arange(n_grid), heat_weights/heat_weights.max(), label='phase-write weights / max')
+axes[1, 2].set(xlabel='KS spatial component', ylabel='normalized value'); axes[1, 2].legend(fontsize=8)
+for ax in [*axes[0], axes[1, 0], axes[1, 1]]: ax.set_xticks([]); ax.set_yticks([])
+plt.show()
+''')
+md(r'''
+## 2. Phase memory, optical path and physical assumptions
+
+For the single phase-memory channel, we must specify how a vector input drives the previous scalar phase state. Here we assume a **fixed local positive weighted sum** of the normalized KS components,
+\[
+s_k=\sum_{\ell=0}^{63}w_\ell u_{k,\ell},\quad w_\ell\ge0,\quad\sum_\ell w_\ell=1,\qquad
+\Phi_{k+1}=a\Phi_k+2\pi s_kG,\qquad a=e^{-1/\tau}.
+\]
+The weights are a fixed periodic Gaussian over the KS coordinate. This deliberately retains the earlier single scalar phase-memory channel; **all 64 components still drive the SLM separately**. The weighted input-to-phase coupling is an explicit mathematical assumption: it is not a calculation of optical absorption, temperature, or a demonstrated way for a phase-only SLM to heat the sample. A realistic multi-channel thermal profile would require separately specified and calibrated coupling and diffusion. Using the spatial mean alone is avoided because the periodic KS field approximately conserves its spatial mean.
+
+The post-write speckle is
+\[
+r_{k+1}=\operatorname{downsample}\left|O_2B\,\operatorname{diag}(e^{i\Phi_{k+1}})AO_1E_{\mathrm{SLM},k}\right|^2.
+\]
+Only the readout is trained by ridge regression. Compare a frozen phase screen, an instantaneous input-dependent phase (no fading history), and fading \(\tau=2,5,10,50,100\). All use the same input encoder, input history, random scattering and camera-noise settings; \(\tau=10\) also has an ideal-camera comparator. A fixed increment gain of \(2\pi\) means changing \(\tau\) changes the steady-state phase amplitude as well as memory duration. The 200-step washout leaves 13.5% of the initial phase for \(\tau=100\). Neither this numerical decay law nor noise parameters are calibrated to an actual device.
+''')
+code('''
+cases = [('Static phase, noisy', 'static', 2, True),
+         ('Instant phase, noisy', 'instant', 2, True),
+         ('Fading τ=2, noisy', 'memory', 2, True),
+         ('Fading τ=5, noisy', 'memory', 5, True),
+         ('Fading τ=10, noisy', 'memory', 10, True),
+         ('Fading τ=50, noisy', 'memory', 50, True),
+         ('Fading τ=100, noisy', 'memory', 100, True),
+         ('Fading τ=10, ideal', 'memory', 10, False)]
+features, phase_peaks = {}, {}
+for label, mode, tau, noisy in cases:
+    X, peaks = simulate_phase_rc(phase_write, optics, G, initial, tau=tau, beta=2*np.pi,
+        mode=mode, camera_shape=camera_shape, slm_inputs=vectors,
+        photon_scale=5000 if noisy else None, read_noise_electrons=3. if noisy else 0., noise_seed=123)
+    features[label], phase_peaks[label] = X, peaks
+    print(f'{label:<23} features={X.shape}, phase after 200 inputs={peaks[199]/np.pi:.3f}π')
+''')
+md(r'''
+## 3. Predict the entire KS field over time
+
+At each step \(k\), the full field \(\mathbf u_k\) drives the SLM and the assumed phase-write channel; the current post-write camera features predict the complete **future** field \(\mathbf u_{k+h}\) for \(h=1,4,16\). Here one time step equals 0.25 dimensionless KS time units.
+
+The first 2,000 input steps comprise the training segment, including 200 washout. The last 400 training steps are reserved for ridge validation; readout fitting excludes targets crossing validation or test boundaries. The final 1,000 steps form the test segment; the phase is not reset. True current full-field inputs are provided at every test step, so this is **teacher-forced field prediction**, not free-running or autonomous forecasting. A free rollout would require feeding predicted fields back as subsequent SLM inputs, introducing an explicit output-to-input loop.
+
+Compare static, instant and fading phase against: (i) the last measured **full input field** (persistence), and (ii) a linear readout of that same full input vector. Both have the same spatial input information as the optical model. The training-field mean is an additional simple baseline. Input normalization uses the first 1,600 training fields only; targets remain in KS field units.
+
+Field NRMSE is \(\sqrt{\sum_{k,x}(\hat u-u)^2 / \sum_{k,x}(u-\bar u_x)^2}\), with \(\bar u_x\) the retrospective test mean at each spatial location. A value near one is comparable to that test-mean reference. The test mean is used only for scoring, never fitting or scaling.
+''')
+code('''
+def field_nrmse(target, prediction):
+    target, prediction = np.asarray(target), np.asarray(prediction)
+    if target.shape != prediction.shape: raise ValueError('target and prediction shapes differ')
+    return np.sqrt(np.sum((target-prediction)**2)/np.sum((target-target.mean(axis=0, keepdims=True))**2))
+
+def select_and_fit(X, Y, split):
+    alphas = [.1, 1., 10., 100., 1000.]
+    validation = [field_nrmse(Y[split['valid']], RidgeReadout(a).fit(X[split['fit']], Y[split['fit']]).predict(X[split['valid']])) for a in alphas]
+    best = alphas[int(np.argmin(validation))]
+    return RidgeReadout(best).fit(X[split['refit']], Y[split['refit']]), best
+
+te = np.arange(train_length, train_length+test_length)
+labels = ['Training mean', 'Full-field persistence', 'Full-field linear'] + [case[0] for case in cases]
+scores, predictions, selected_alphas = {}, {}, {}
+for h in horizons:
+    split = chronological_indices(train_length=train_length, washout=washout,
+        validation_length=validation_length, test_length=test_length, horizon=h)
+    indices = np.arange(train_length+test_length)
+    Y = ks[indices+h]
+    scores[h], predictions[h], selected_alphas[h] = {}, {}, {}
+    predictions[h]['Training mean'] = np.broadcast_to(Y[split['refit']].mean(axis=0), Y[te].shape)
+    predictions[h]['Full-field persistence'] = lo+(hi-lo)*vectors[te]  # same clipped field supplied to SLM
+    direct, alpha = select_and_fit(vectors, Y, split)
+    predictions[h]['Full-field linear'] = direct.predict(vectors[te])
+    selected_alphas[h]['Full-field linear'] = alpha
+    for label, _, _, _ in cases:
+        model, alpha = select_and_fit(features[label], Y, split)
+        predictions[h][label] = model.predict(features[label][te])
+        selected_alphas[h][label] = alpha
+    for label in labels:
+        scores[h][label] = field_nrmse(Y[te], predictions[h][label])
+
+print(f"{'Condition':<25}" + ''.join(f'{f"h={h}":>12}' for h in horizons))
+for label in labels:
+    print(f'{label:<25}' + ''.join(f'{scores[h][label]:>12.4f}' for h in horizons))
+print('Teacher-forced prediction; lower NRMSE is better. h=1,4,16 correspond to 0.25,1,4 KS time units.')
+''')
+md(r'''
+## 4. Complete spatial–temporal field over the 1,000 test steps
+
+All panels have the same color scale. The plot shows **all 64 spatial components**, not a selected position. `h=1` is the default; change `h` to 4 or 16 to examine a harder prediction horizon. Field values are not independently normalized or rescaled per panel.
+''')
+code('''
+h = 1
+truth = ks[te+h]
+show_labels = ['Full-field persistence', 'Full-field linear', 'Static phase, noisy',
+               'Instant phase, noisy', 'Fading τ=2, noisy', 'Fading τ=5, noisy',
+               'Fading τ=10, noisy', 'Fading τ=50, noisy', 'Fading τ=100, noisy']
+all_fields = [truth] + [predictions[h][name] for name in show_labels]
+limit = max(np.max(np.abs(v)) for v in all_fields)
+fig, axes = plt.subplots(len(all_fields), 1, figsize=(13, 2.1*len(all_fields)), sharex=True, constrained_layout=True)
+for ax, field, label in zip(axes, all_fields, ['Ground truth']+show_labels):
+    im = ax.imshow(field.T, origin='lower', aspect='auto', cmap='RdBu_r', vmin=-limit, vmax=limit,
+                   extent=(0, len(te), 0, length))
+    score = '' if label == 'Ground truth' else f' (NRMSE={scores[h][label]:.3f})'
+    ax.set(title=label+score, ylabel='position x')
+axes[-1].set_xlabel('test time step (0–1000)')
+fig.colorbar(im, ax=axes, label='KS field', shrink=.7); plt.show()
+
+fig, ax = plt.subplots(figsize=(10, 4), constrained_layout=True)
+for label in ['Full-field persistence', 'Full-field linear', 'Instant phase, noisy',
+              'Fading τ=2, noisy', 'Fading τ=5, noisy', 'Fading τ=10, noisy',
+              'Fading τ=50, noisy', 'Fading τ=100, noisy']:
+    ax.plot(horizons, [scores[h][label] for h in horizons], 'o-', label=label)
+ax.set(xlabel='prediction horizon h (input steps)', ylabel='full-field NRMSE', xticks=horizons)
+ax.grid(alpha=.25); ax.legend(fontsize=8, ncol=2); plt.show()
+
+fig, ax = plt.subplots(figsize=(11, 3.5), constrained_layout=True)
+for label in ['Full-field persistence', 'Instant phase, noisy', 'Fading τ=2, noisy', 'Fading τ=10, noisy']:
+    ax.plot(np.arange(len(te)), np.sqrt(np.mean((predictions[h][label]-truth)**2, axis=1)), lw=.8, label=label)
+ax.set(xlabel='test time step (0–1000)', ylabel='spatial RMSE', title=f'Instantaneous error across the full field, h={h}')
+ax.grid(alpha=.2); ax.legend(fontsize=8); plt.show()
+''')
+md(r'''
+## Interpretation and limitations
+
+The input contains the entire current spatial field, so high short-horizon performance may arise from smooth KS evolution or a static mapping, without fading memory. Compare with full-field persistence, the direct linear readout and instant phase before attributing a gain to the phase state. Only the scalar weighted phase drive has memory; the thresholded SLM field carries current information, not explicitly stored delays. The simulation models a phenomenological phase screen, not calibrated input-dependent heating. Train/test share one simulated trajectory, and the camera, input mask, phase initialization and KS seed represent one realization; use independent seeds and hardware calibration for robust conclusions. The scalar-observer results from the earlier experiment are retained separately and should not be compared as though the tasks had equal input information.
+''')
+
+notebook = {'cells': cells, 'metadata': {'kernelspec': {'display_name': 'Python 3', 'language': 'python', 'name': 'python3'}, 'language_info': {'name': 'python', 'version': '3'}}, 'nbformat': 4, 'nbformat_minor': 4}
+output = Path(sys.argv[1]) if len(sys.argv) > 1 else Path('ks_phase_memory_rc.ipynb')
+output.write_text(json.dumps(notebook, ensure_ascii=False, indent=1)+'\n', encoding='utf-8')
