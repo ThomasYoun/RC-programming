@@ -13,7 +13,7 @@ def code(text):
 md(r'''
 # Full-field KS input encoding and phase-memory optical RC
 
-This notebook replaces the earlier one-sensor KS task with **complete spatial-field input and output**. Every time step supplies all 64 KS spatial values, encoded by a fixed random threshold map onto a two-dimensional SLM. The speckle readout predicts the full future KS field, and results are displayed as spatial–temporal images across all 1,000 test steps. No prior speckle or reservoir state is concatenated onto the SLM.
+This notebook replaces the earlier one-sensor KS task with **complete spatial-field input and output**. Every time step supplies all 64 KS spatial values, encoded by ordered columns and fixed random thresholds on a 64×64 input plane. Each input pixel expands into a 4×4 block on a 256×256 SLM. The speckle readout predicts the full future KS field, and results are displayed as spatial–temporal images across all 1,000 test steps. No prior speckle or reservoir state is concatenated onto the SLM.
 
 The experiment uses a single phenomenological phase-memory channel and a fixed input-to-phase coupling described below. It is not a calibrated thermal optical experiment, nor a reproduction of the explicit-delay optical NGRC in [Wang et al.](https://www.nature.com/articles/s41377-025-01927-6). The older one-sensor observer has been retained separately as `ks_single_sensor_observer.ipynb`.
 
@@ -22,15 +22,20 @@ Run from `thermal_optical_rc` with `ks_data.py`, `spatial_input_optics.py`, `pha
 md(r'''
 ## 1. Fixed random-threshold encoding of a 64-component field
 
-Let \(\mathbf u_k=(u_{k,0},\ldots,u_{k,63})\in[0,1]^{64}\) denote the normalized KS field. Each SLM pixel \(p\) is assigned a fixed spatial-component index \(\ell_p\in\{0,\ldots,63\}\) and a fixed random threshold \(T_p\in[0,1)\). At every time step,
+Let \(\mathbf u_k=(u_{k,0},\ldots,u_{k,63})\in[0,1]^{64}\) denote the normalized KS field. Input-plane column \(\ell\) is assigned to component \(u_{k,\ell}\), while every input-plane pixel \((i,\ell)\) has its own fixed random threshold \(T_{i,\ell}\in[0,1)\). At every time step,
 \[
-B_k(p)=\mathbf1\!\left[u_{k,\ell_p}>T_p\right],\qquad
-\varphi_{\mathrm{SLM},k}(p)=\pi B_k(p),\qquad
-E_{\mathrm{SLM},k}(p)=e^{i\varphi_{\mathrm{SLM},k}(p)}.
+B^{64}_k(i,\ell)=\mathbf1\!\left[u_{k,\ell}>T_{i,\ell}\right],\qquad
+B^{256}_k(4i+d_i,4\ell+d_j)=B^{64}_k(i,\ell),\quad d_i,d_j\in\{0,1,2,3\},
 \]
-Assignments are randomly shuffled but balanced: every KS component controls the same number of pixels for the default 128×128 SLM. The component map, threshold matrix, scattering operators and pupils are initialized once and remain fixed. Every SLM pixel is assigned to the **current input field only**, with no feedback-state concatenation. The corresponding scalar MG notebook uses the same encoding with one input component, as in `RC_opMGSLM.ipynb`'s fixed-mask threshold idea, but without its previous-reservoir-state concatenation.
+\[
+\varphi_{\mathrm{SLM},k}=\pi B^{256}_k,\qquad
+E_{\mathrm{SLM},k}=e^{i\varphi_{\mathrm{SLM},k}}.
+\]
+Assignments follow KS spatial order without shuffling: one column of the 64×64 input plane per component, expanded to four adjacent columns of the 256×256 SLM. Each input pixel has an independent fixed threshold; its 4×4 expanded block copies the **same** binary value and phase. Thus each KS component controls 64 input pixels or 1,024 SLM pixels. The component map, threshold matrix, scattering operators and pupils are initialized once and remain fixed. Every SLM pixel is assigned to the **current input field only**, with no feedback-state concatenation. The corresponding scalar MG notebook uses the same encoding idea with one input component but retains its own 128×128 plane. The shuffled component layout remains an explicit alternative via `layout='shuffled'`.
 
-With a phase-only SLM \(|E_{\mathrm{SLM}}|=1\), so its amplitude image is white; the binary phase image carries the information. All-zero and all-one images differ only by a global \(\pi\) phase and are indistinguishable to ideal intensity detection if all other phases are equal. This is a real encoding limitation, not evidence of memory.
+The preceding KS notebook used a 128×128 optical plane and a shuffled high-resolution assignment. This version changes both the encoding and the optical sampling to 256×256, so its scores do **not** isolate the effect of column ordering alone. To compare layouts fairly, run the same 64×64-to-256×256 configuration with `layout='columns'` and `layout='shuffled'`, keeping the random seeds and all other settings fixed.
+
+With a phase-only SLM \(|E_{\mathrm{SLM}}|=1\), so its amplitude image is white regardless of pixel phase; the binary phase image carries the information. In this threshold model each SLM pixel is exactly either \(0\) or \(\pi\), and all 16 pixels within a copied 4×4 block have the same phase. A true device may have continuous calibrated phase levels or noise, but these are not simulated by this binary SLM encoder. A non-cyclic phase colormap distinguishes \(0\) and \(\pi\); a previously used cyclic colormap made the two endpoints look nearly identical. All-zero and all-one images differ only by a global \(\pi\) phase and are indistinguishable to ideal intensity detection if all other phases are equal.
 ''')
 code('''
 import numpy as np
@@ -46,7 +51,8 @@ torch.set_num_threads(1)
 plt.rcParams['figure.dpi'] = 100
 train_length, washout, validation_length, test_length = 2000, 200, 400, 1000
 horizons = [1, 4, 16]
-shape, camera_shape, n_grid = (128, 128), (16, 16), 64
+encoding_shape, shape, camera_shape, n_grid = (64, 64), (256, 256), (16, 16), 64
+block_size = 4
 dt_ks, length = .25, 22.
 ks = generate_ks(n_samples=train_length+test_length+max(horizons), n_grid=n_grid,
                  domain_length=length, dt=dt_ks, warmup_steps=1000, seed=2026)
@@ -56,36 +62,43 @@ if hi <= lo: raise ValueError('training field is constant')
 raw_inputs = (ks[:train_length+test_length]-lo)/(hi-lo)
 vectors = np.clip(raw_inputs, 0, 1)
 optics = ThresholdSLMOptics(n_inputs=n_grid, optical_shape=shape, pupil_radius=(.25, .25),
-                           seed=42, encoder_seed=271)
+                           seed=42, encoder_seed=271, layout='columns',
+                           encoding_shape=encoding_shape, block_size=block_size)
 G = radial_profile(shape, core_radius=.12, support_fraction=.8)
 initial = np.random.default_rng(2026).uniform(0, 6*np.pi, shape)
 heat_weights = localized_component_weights(n_grid, width_fraction=.125)
 phase_write = vectors @ heat_weights
 print(f'KS field: {ks.shape}; L={length:g}, grid={n_grid}, integration/sample step={dt_ks:g}')
-print(f'SLM: {shape}; each component controls {shape[0]*shape[1]//n_grid} threshold pixels')
+print(f'Input plane: {encoding_shape}; SLM/optical plane: {shape}; block: {block_size}×{block_size}')
+print(f'Ordered columns; per KS component: {encoding_shape[0]} independent thresholds, {shape[0]*shape[1]//n_grid} SLM pixels')
 print(f'Test-field element clipping: {np.mean(raw_inputs[train_length:] != vectors[train_length:]):.2%}')
 print(f'Phase-screen support: {np.count_nonzero(G)/G.size:.2%}; scalar phase-write drive range: {phase_write.min():.3f}–{phase_write.max():.3f}')
 ''')
 code('''
 sample_step = 2100
+base_pattern = optics.encode_base(vectors[sample_step])
 pattern = optics.encode(vectors[sample_step])
 slm_phase = np.pi*pattern
-fig, axes = plt.subplots(2, 3, figsize=(13, 7), constrained_layout=True)
-im = axes[0, 0].imshow(optics.component_map, cmap='turbo', vmin=0, vmax=n_grid-1)
-axes[0, 0].set_title('fixed KS-component assignment'); fig.colorbar(im, ax=axes[0, 0], label='component index')
-im = axes[0, 1].imshow(optics.thresholds, cmap='gray', vmin=0, vmax=1)
-axes[0, 1].set_title('fixed random thresholds'); fig.colorbar(im, ax=axes[0, 1])
-im = axes[0, 2].imshow(pattern, cmap='gray', vmin=0, vmax=1)
-axes[0, 2].set_title(f'thresholded input B[k], k={sample_step}')
-im = axes[1, 0].imshow(slm_phase, cmap='twilight', vmin=0, vmax=np.pi)
-axes[1, 0].set_title('SLM phase (rad)'); cb=fig.colorbar(im, ax=axes[1, 0], ticks=[0, np.pi]); cb.ax.set_yticklabels(['0', 'π'])
+fig, axes = plt.subplots(2, 4, figsize=(16, 7), constrained_layout=True)
+im = axes[0, 0].imshow(optics.base_component_map, cmap='turbo', vmin=0, vmax=n_grid-1)
+axes[0, 0].set_title('64×64 ordered component columns'); fig.colorbar(im, ax=axes[0, 0], label='component index')
+im = axes[0, 1].imshow(optics.base_thresholds, cmap='gray', vmin=0, vmax=1)
+axes[0, 1].set_title('64×64 fixed random thresholds'); fig.colorbar(im, ax=axes[0, 1])
+axes[0, 2].imshow(base_pattern, cmap='gray', vmin=0, vmax=1, interpolation='nearest')
+axes[0, 2].set_title(f'64×64 thresholded input, k={sample_step}')
+axes[0, 3].imshow(pattern, cmap='gray', vmin=0, vmax=1, interpolation='nearest')
+axes[0, 3].set_title('256×256 after 4×4 block expansion')
+im = axes[1, 0].imshow(slm_phase, cmap='viridis', vmin=0, vmax=np.pi, interpolation='nearest')
+axes[1, 0].set_title('256×256 SLM phase (rad)'); cb=fig.colorbar(im, ax=axes[1, 0], ticks=[0, np.pi]); cb.ax.set_yticklabels(['0', 'π'])
 axes[1, 1].imshow(np.abs(np.exp(1j*slm_phase)), cmap='gray', vmin=0, vmax=1)
 axes[1, 1].set_title('SLM amplitude |exp(iφ)| = 1')
 axes[1, 2].plot(np.arange(n_grid), vectors[sample_step], label='KS input')
 axes[1, 2].plot(np.arange(n_grid), heat_weights/heat_weights.max(), label='phase-write weights / max')
 axes[1, 2].set(xlabel='KS spatial component', ylabel='normalized value'); axes[1, 2].legend(fontsize=8)
+axes[1, 3].axis('off')
 for ax in [*axes[0], axes[1, 0], axes[1, 1]]: ax.set_xticks([]); ax.set_yticks([])
 plt.show()
+print('Distinct modeled SLM phase levels in units of π:', np.unique(slm_phase/np.pi))
 ''')
 md(r'''
 ## 2. Phase memory, optical path and physical assumptions
