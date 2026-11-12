@@ -20,7 +20,7 @@ Installing PyTorch may involve downloading large packages. The original example 
 
 ## File descriptions
 
-- `ks_phase_memory_rc.ipynb`: full-field KS teacher-forced prediction using all 64 current spatial values, a fixed threshold-based two-dimensional SLM encoder, and phase-memory τ = 2, 5, 10, 50, 100. The 1,000-step test visualizes the entire spatial–temporal field. A fixed weighted scalar input-to-phase drive is a phenomenological assumption, not an optical absorption model. The data are generated at runtime; no external KS data download is required.
+- `ks_phase_memory_rc.ipynb`: full-field KS teacher-forced prediction using all 64 current spatial values, a fixed threshold-based two-dimensional SLM encoder, and phase-memory τ = 2, 5, 10, 50, 100. The 1,000-step test visualizes ground truth, predictions and signed spatial–temporal error maps for all conditions. A fixed weighted scalar input-to-phase drive is a phenomenological assumption, not an optical absorption model. The data are generated at runtime; no external KS data download is required.
 - `ks_single_sensor_observer.ipynb`: the earlier single-sensor KS observer experiment, preserved separately. It uses a fixed SLM probe and predicts the remaining 63 positions, a different information regime from the full-field task.
 - `ks_data.py`, `test_ks_data.py`, `make_ks_vector_field_notebook.py`, and `make_ks_phase_rc_notebook.py`: de-aliased Fourier ETDRK4 KS data generator, numerical tests, and full-field and single-sensor notebook generators. Run `python -m unittest -v test_ks_data`.
 - `spatial_input_optics.py`, `test_spatial_input_optics.py`: fixed random threshold encoder for scalar MG and full-vector KS, optical propagation, and corresponding tests.
