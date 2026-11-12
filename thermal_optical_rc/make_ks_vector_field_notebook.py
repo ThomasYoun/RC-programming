@@ -206,6 +206,48 @@ ax.set(xlabel='test time step (0–1000)', ylabel='spatial RMSE', title=f'Instan
 ax.grid(alpha=.2); ax.legend(fontsize=8); plt.show()
 ''')
 md(r'''
+## 5. Spatial–temporal error maps
+
+For each baseline and optical condition, compare the true field, the predicted field and the **signed error**
+\[
+e(x,k)=\hat u(x,k+h)-u(x,k+h).
+\]
+The horizontal axis is the complete 1,000-step test interval and the vertical axis is the 1-D KS spatial coordinate; this is a space–time map, not a two-dimensional spatial KS equation. Red errors indicate overprediction and blue errors underprediction. All truth/prediction panels use the same field color scale; all error panels use one common, symmetric error scale in the original KS units. The two color scales can differ from each other, and no panel is individually normalized.
+
+Change `h_error` to 1, 4 or 16 to inspect the matching precomputed teacher-forced prediction horizon. NRMSE values are evaluated over every test step and all 64 spatial positions.
+''')
+code('''
+h_error = 1  # select 1, 4 or 16 input steps
+if h_error not in horizons:
+    raise ValueError(f'h_error must be one of {horizons}')
+error_truth = ks[te+h_error]
+error_labels = ['Full-field persistence', 'Full-field linear'] + [case[0] for case in cases]
+error_predictions = [predictions[h_error][label] for label in error_labels]
+error_maps = [field-error_truth for field in error_predictions]
+field_limit = max(np.max(np.abs(field)) for field in [error_truth]+error_predictions)
+error_limit = max(np.max(np.abs(error)) for error in error_maps)
+if field_limit == 0: field_limit = 1.0
+if error_limit == 0: error_limit = 1.0
+extent = (0, len(te), 0, length)
+fig, axes = plt.subplots(len(error_labels), 3, figsize=(16, 2.2*len(error_labels)),
+                         sharex=True, sharey=True, constrained_layout=True, squeeze=False)
+for row, (label, field, error) in enumerate(zip(error_labels, error_predictions, error_maps)):
+    field_im = axes[row, 0].imshow(error_truth.T, origin='lower', aspect='auto', cmap='RdBu_r',
+        vmin=-field_limit, vmax=field_limit, extent=extent)
+    axes[row, 1].imshow(field.T, origin='lower', aspect='auto', cmap='RdBu_r',
+        vmin=-field_limit, vmax=field_limit, extent=extent)
+    error_im = axes[row, 2].imshow(error.T, origin='lower', aspect='auto', cmap='RdBu_r',
+        vmin=-error_limit, vmax=error_limit, extent=extent)
+    axes[row, 0].set(ylabel=f'{label}\\nposition x')
+    axes[row, 1].set_title(f'Prediction (NRMSE={scores[h_error][label]:.3f})', fontsize=9)
+    axes[row, 2].set_title('Signed error: prediction − truth', fontsize=9)
+axes[0, 0].set_title(f'Ground truth, h={h_error}', fontsize=9)
+for ax in axes[-1]: ax.set_xlabel('test time step (0–1000)')
+fig.colorbar(field_im, ax=axes[:, :2], label='KS field', shrink=.35)
+fig.colorbar(error_im, ax=axes[:, 2], label='prediction − truth', shrink=.35)
+plt.show()
+''')
+md(r'''
 ## Interpretation and limitations
 
 The input contains the entire current spatial field, so high short-horizon performance may arise from smooth KS evolution or a static mapping, without fading memory. Compare with full-field persistence, the direct linear readout and instant phase before attributing a gain to the phase state. Only the scalar weighted phase drive has memory; the thresholded SLM field carries current information, not explicitly stored delays. The simulation models a phenomenological phase screen, not calibrated input-dependent heating. Train/test share one simulated trajectory, and the camera, input mask, phase initialization and KS seed represent one realization; use independent seeds and hardware calibration for robust conclusions. The scalar-observer results from the earlier experiment are retained separately and should not be compared as though the tasks had equal input information.
