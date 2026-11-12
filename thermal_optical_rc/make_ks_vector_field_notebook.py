@@ -99,6 +99,25 @@ axes[1, 3].axis('off')
 for ax in [*axes[0], axes[1, 0], axes[1, 1]]: ax.set_xticks([]); ax.set_yticks([])
 plt.show()
 print('Distinct modeled SLM phase levels in units of π:', np.unique(slm_phase/np.pi))
+row0, col0, patch_size = 16, 16, 6
+coarse_patch = base_pattern[row0:row0+patch_size, col0:col0+patch_size]
+expanded_patch = pattern[block_size*row0:block_size*(row0+patch_size),
+                         block_size*col0:block_size*(col0+patch_size)]
+assert np.array_equal(expanded_patch, np.repeat(np.repeat(coarse_patch, block_size, axis=0), block_size, axis=1))
+fig, axes = plt.subplots(1, 2, figsize=(8, 4), constrained_layout=True)
+axes[0].imshow(coarse_patch, cmap='gray', vmin=0, vmax=1, interpolation='nearest')
+axes[0].set_title('6×6 input pixels')
+axes[1].imshow(expanded_patch, cmap='gray', vmin=0, vmax=1, interpolation='nearest')
+axes[1].set_title('24×24 SLM pixels: 4×4 per input')
+for ax, size, step in [(axes[0], patch_size, 1), (axes[1], patch_size*block_size, block_size)]:
+    ax.set_xticks(np.arange(-.5, size, step)); ax.set_yticks(np.arange(-.5, size, step))
+    ax.grid(color='red', linewidth=.6)
+    ax.tick_params(bottom=False, left=False, labelbottom=False, labelleft=False)
+axes[1].set_xticks(np.arange(-.5, patch_size*block_size, 1), minor=True)
+axes[1].set_yticks(np.arange(-.5, patch_size*block_size, 1), minor=True)
+axes[1].grid(which='minor', color='gray', alpha=.7, linewidth=.25)
+axes[1].tick_params(which='minor', bottom=False, left=False)
+plt.show()
 ''')
 md(r'''
 ## 2. Phase memory, optical path and physical assumptions
